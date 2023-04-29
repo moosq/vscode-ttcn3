@@ -17,6 +17,14 @@ let outputChannel: OutputChannel;
 
 let generationCounter = 0;
 
+interface Ttcn3Test {
+	filename: string
+	line: number
+	column: number
+	id: string
+	tags: string[]
+}
+
 type Ws2Suite = Map<string, string>;
 interface TcSuite {
 	root_dir: string
@@ -46,7 +54,34 @@ function readTtcn3Suite(fileName: string): Ttcn3SuiteType {
 	let obj: Ttcn3SuiteType = JSON.parse(content);
 	return obj;
 }
+async function getTestcaseList(exe: string, pathToYml: string): Promise<Ttcn3Test[]> {
+	var tcList: Ttcn3Test[] = [];
+	const child = child_process.spawn(exe, ['list', pathToYml, '--json']);
+	let stdoutBuf = "";
+	let stderrBuf = "";
+	child.stdout.setEncoding('utf8'); // for text chunks
+	child.stderr.setEncoding('utf8'); // for text chunks
+	child.stdout.on('data', (chunk) => {
+		// data from standard output is here as buffers
+		stdoutBuf += chunk;
+	});
 
+	child.stderr.on('data', (chunk) => {
+		// data from standard output is here as buffers
+		stderrBuf += chunk;
+	});
+
+	child.on('close', (code) => {
+		console.log(`child process exited with code ${code}`);
+		if (stdoutBuf.length > 0) {
+			tcList = JSON.parse(stdoutBuf);
+		}
+		if (stderrBuf.length > 0) {
+			console.log(`stderr of ${exe}: ${stderrBuf}`);
+		}
+	});
+	return tcList;
+}
 class TestCase {
 	constructor(
 		private readonly a: number,
@@ -237,9 +272,6 @@ export function activate(context: ExtensionContext) {
 		await activateLanguageServer(context, status, conf);
 	}));
 
-
-	//testCtrl.items.add(file1);
-	//testCtrl.items.add(file2);
 	const from_ttcn3_suites = findTtcn3Suite(vscode.workspace.workspaceFolders);
 	from_ttcn3_suites.forEach((v: string, k: string) => {
 		outputChannel.append(`Detected a suite in workspace: ${v}\n`);
