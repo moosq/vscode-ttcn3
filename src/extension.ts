@@ -3,7 +3,7 @@ import path = require('path');
 import * as child_process from "child_process";
 import * as vscode from 'vscode';
 import { ExtensionContext, OutputChannel, TestRunRequest, TestRunProfileKind } from 'vscode';
-import { LanguageClient, LanguageClientOptions, ServerOptions, ExecuteCommandParams, ExecuteCommandRequest, DidChangeConfigurationParams, DidChangeConfigurationNotification } from 'vscode-languageclient/node';
+import { LanguageClient, LanguageClientOptions, ServerOptions, ExecuteCommandParams, ExecuteCommandRequest, DidChangeConfigurationParams, DidChangeConfigurationNotification, VersionedTextDocumentIdentifier } from 'vscode-languageclient/node';
 import { LOG } from './util/logger';
 import { ServerDownloader } from './serverDownloader';
 import { Status, StatusBarEntry } from './util/status';
@@ -54,33 +54,57 @@ function readTtcn3Suite(fileName: string): Ttcn3SuiteType {
 	let obj: Ttcn3SuiteType = JSON.parse(content);
 	return obj;
 }
-async function getTestcaseList(exe: string, pathToYml: string): Promise<Ttcn3Test[]> {
-	var tcList: Ttcn3Test[] = [];
+
+async function getTestcaseList(outCh: vscode.OutputChannel, exe: string, pathToYml: string): Promise<Ttcn3Test[]> {
+	let tcList: Ttcn3Test[] = [];
 	const child = child_process.spawn(exe, ['list', pathToYml, '--json']);
+	outCh.appendLine(`about to execute ${exe} list ${pathToYml} --json`);
+	child.on("error", (err: Error) => {
+		stderrBuf = stderrBuf.concat(`Execution of ${exe} finished with: ${err}`);
+	})
 	let stdoutBuf = "";
 	let stderrBuf = "";
 	child.stdout.setEncoding('utf8'); // for text chunks
 	child.stderr.setEncoding('utf8'); // for text chunks
 	child.stdout.on('data', (chunk) => {
 		// data from standard output is here as buffers
-		stdoutBuf += chunk;
+		stdoutBuf = stdoutBuf.concat(chunk);
 	});
 
 	child.stderr.on('data', (chunk) => {
-		// data from standard output is here as buffers
-		stderrBuf += chunk;
+		// data from standard error is here as buffers
+		stderrBuf = stderrBuf.concat(chunk);
 	});
 
-	child.on('close', (code) => {
-		console.log(`child process exited with code ${code}`);
-		if (stdoutBuf.length > 0) {
-			tcList = JSON.parse(stdoutBuf);
+	const exitCode = new Promise<string>((resolve, reject) => {
+		child.on('close', (code) => {
+			if (code == 0) {
+				outCh.appendLine(`on closing pipe: code=${code}. Calling resolve passing ${stdoutBuf.length} bytes`);
+				resolve(stdoutBuf);
+			}
+			else {
+				outCh.appendLine(`on closing pipe: code=${code}. Calling reject passing ${stderrBuf}`)
+				reject(stderrBuf);
+			}
+		});
+	});
+
+	// attention: without await we are not stopping here!
+	await exitCode.then((buf: string) => {
+		if (buf.length > 0) {
+			tcList = JSON.parse(buf);
+			outCh.appendLine(`after JSON parsing: tcList len: ${tcList.length}`);
 		}
 		if (stderrBuf.length > 0) {
-			console.log(`stderr of ${exe}: ${stderrBuf}`);
+			outCh.appendLine(`stderr of ${exe}: ${stderrBuf}`);
 		}
+	}, (reason) => {
+		outCh.appendLine(`exec promise rejected: ${reason}`);
 	});
-	return tcList;
+
+	return new Promise<Ttcn3Test[]>((resolve) => {
+		resolve(tcList);
+	})
 }
 class TestCase {
 	constructor(
@@ -281,10 +305,25 @@ export function activate(context: ExtensionContext) {
 		content.suites.forEach((v: TcSuite, idx: number, list: TcSuite[]) => {
 			const sct = testCtrl.createTestItem(v.target, v.target, undefined);
 			suite.children.add(sct);
-			const modul = testCtrl.createTestItem("meinModul".concat(v.target), "meinModul", undefined);
-			const tc1 = testCtrl.createTestItem("meinTC1_1".concat(v.target), "meinModul.meinTC1_1", undefined);
-			sct.children.add(modul);
-			modul.children.add(tc1);
+			getTestcaseList(outputChannel, '/sdk/prefix_root_NATIVE-gcc/usr/bin/ntt', v.root_dir).then((list: Ttcn3Test[]) => {
+				outputChannel.appendLine(`Detected ${list.length} tests from ${v.target}`);
+				const file2Tests = new Map<string, string[]>();
+				list.forEach((vtc: Ttcn3Test, idx: number, a: Ttcn3Test[]) => {
+					if (file2Tests.has(vtc.filename)) {
+						file2Tests.get(vtc.filename)!.push(vtc.id);
+					} else {
+						file2Tests.set(vtc.filename, [vtc.id]);
+					}
+				});
+				file2Tests.forEach((v, k) => {
+					const mod = testCtrl.createTestItem(k, k, undefined);
+					sct.children.add(mod);
+					v.forEach(tcName => {
+						const tc = testCtrl.createTestItem(tcName.concat(k), tcName, undefined);
+						mod.children.add(tc);
+					})
+				});
+			});
 		})
 		testCtrl.items.add(suite);
 	})
