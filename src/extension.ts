@@ -11,6 +11,7 @@ import { isOSUnixoid, correctBinname } from './util/osUtils';
 import { O_SYMLINK } from 'constants';
 import { fsExists } from './util/fsUtils';
 import { Suite } from 'mocha';
+import { profile } from 'console';
 
 let client: LanguageClient;
 let outputChannel: OutputChannel;
@@ -106,33 +107,71 @@ async function getTestcaseList(outCh: vscode.OutputChannel, exe: string, pathToY
 		resolve(tcList);
 	})
 }
+
+class TestSession {
+	constructor(
+		private readonly name: string,
+		private readonly runInst: vscode.TestRun
+	) {
+		this.testList = [];
+	}
+
+	getLabel() {
+		return `this is test session ${this.name}`;
+	}
+
+	addTest(item: vscode.TestItem) {
+		this.testList.push(item);
+	}
+	async run(): Promise<void> {
+		const start = Date.now();
+
+		await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 1000)); // simulating a random longer time for execution
+		const exitVal = this.execute();
+		const duration = Date.now() - start;
+		this.testList.forEach(v => {
+			this.runInst.appendOutput(`finished execution of ${v.id}`);
+			this.runInst.passed(v, duration); // TODO: for the moment it shall always pass
+		})
+
+		/*	const message = vscode.TestMessage.diff(`Expected ${item.label}`, String(this.expected), String(actual));
+			message.location = new vscode.Location(item.uri!, item.range!);
+			options.failed(item, message, duration);*/
+
+	}
+
+	private execute() {
+		return 0
+	}
+	private testList: vscode.TestItem[];
+}
+
 class TestCase {
 	constructor(
-		private readonly a: number,
-		private readonly expected: number
+		private readonly label: string
 	) { }
 
 	getLabel() {
-		return `this is a test with a number ${this.a} expected: ${this.expected}`;
+		return `this is a test called ${this.label}`;
 	}
 
 	async run(item: vscode.TestItem, options: vscode.TestRun): Promise<void> {
 		const start = Date.now();
+
 		await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 1000)); // simulating a random longer time for execution
-		const actual = this.evaluate();
+		const exitVal = this.execute();
 		const duration = Date.now() - start;
 
-		if (actual === this.expected) {
-			options.passed(item, duration);
-		} else {
-			const message = vscode.TestMessage.diff(`Expected ${item.label}`, String(this.expected), String(actual));
+		options.passed(item, duration); // TODO: for the moment it shall always pass
+
+		/*	const message = vscode.TestMessage.diff(`Expected ${item.label}`, String(this.expected), String(actual));
 			message.location = new vscode.Location(item.uri!, item.range!);
-			options.failed(item, message, duration);
-		}
+			options.failed(item, message, duration);*/
+
 	}
 
-	private evaluate() {
-		return this.a;
+	private execute() {
+		return 0
 	}
 }
 
@@ -165,7 +204,7 @@ class TestFile {
 		};
 
 		const parent = ancestors[ancestors.length - 1];
-		const data = new TestCase(12, 11);
+		const data = new TestCase("12");
 		const id = `${item.uri}/${data.getLabel()}`;
 		const tcase = controller.createTestItem(id, data.getLabel(), item.uri);
 		testData.set(tcase, data);
@@ -230,7 +269,9 @@ export function activate(context: ExtensionContext) {
 
 	// register test capability
 	const testCtrl = vscode.tests.createTestController('ttcn3Executor', 'ttcn-3 Testcase Executor');
-
+	testCtrl.resolveHandler = async test => {
+		outputChannel.appendLine(`acquire tests from this point on: ${test?.id}, ${test?.label}`);
+	}
 	const runHandler = (request: TestRunRequest2, cancellation: vscode.CancellationToken) => {
 		if (!request.continuous) {
 			return startTestRun(request);
@@ -246,42 +287,59 @@ export function activate(context: ExtensionContext) {
 	const startTestRun = (request: vscode.TestRunRequest) => {
 		const queue: { test: vscode.TestItem; data: TestCase }[] = [];
 		const run = testCtrl.createTestRun(request);
-
+		const testSession = new TestSession(request.profile!.label, run);
+		const excludeTests: vscode.TestItem[] = [];
+		var mixedExcludeList: vscode.TestItem[] = [];
+		mixedExcludeList.concat(request.exclude ? request.exclude : []);
+		for (let i = 0; i < mixedExcludeList!.length; i++) {
+			if (mixedExcludeList![i].canResolveChildren) {
+				mixedExcludeList![i].children.forEach(item => { mixedExcludeList!.push(item); })
+			}
+			else {
+				excludeTests.push(mixedExcludeList[i]);
+			}
+		};
+		outputChannel.appendLine(`param provided to startTestRun: ${request.profile!.label}`);
 		const discoverTests = async (tests: Iterable<vscode.TestItem>) => {
+			// tests includes all the tests or parent tree nodes which are marked(UI) for a session
+			// hidden tests (UI) are provided via request.exclude list
+			const testsOnly: vscode.TestItem[] = [];
 			for (const test of tests) {
-				if (request.exclude?.includes(test)) {
+				testsOnly.push(test);
+			}
+			for (const test of testsOnly) {
+				outputChannel.appendLine(`param provided to discoverTests inside runHandler: ${test.label}, ${test.id}, excluding: ${request.exclude}`);
+				if (excludeTests.includes(test)) {
+					outputChannel.appendLine(`discoverTests: exclude from run: ${test.label}`);
 					continue;
 				}
 
-				const data = testData.get(test);
-				if (data instanceof TestCase) {
-					run.enqueued(test);
-					queue.push({ test, data });
-				} else {
-					if (data instanceof TestFile && !data.didResolve) {
-						await data.updateFromDisk(testCtrl, test);
-					}
-
-					await discoverTests(gatherTestItems(test.children));
+				if (test.canResolveChildren === false) {
+					// only real tests shall be marked as enqueued
+					run.enqueued(test); // only an indication for the UI
+					testSession.addTest(test);
+					continue;
 				}
+				test.children.forEach(item => { testsOnly.push(item) });
 			}
 		};
 
 		const runTestQueue = async () => {
-			for (const { test, data } of queue) {
+			await testSession.run();
+			/*for (const { test, data } of queue) {
 				run.appendOutput(`Running ${test.id}\r\n`);
 				if (run.token.isCancellationRequested) {
-					run.skipped(test);
+					run.skipped(test); // only an indication for the UI
 				} else {
-					run.started(test);
+					run.started(test); // only an indication for the UI
 					await data.run(test, run);
 				}
 
 				//const lineNo = test.range!.start.line;
 
 				run.appendOutput(`Completed ${test.id}\r\n`);
-			}
-
+			}*/
+			run.appendOutput(`Completed session ${request.profile!.label}`);
 			run.end();
 		};
 
@@ -304,7 +362,9 @@ export function activate(context: ExtensionContext) {
 		outputChannel.appendLine(`content from ttcn3_suites.json: ${JSON.stringify(content)}\n`);
 		content.suites.forEach((v: TcSuite, idx: number, list: TcSuite[]) => {
 			const sct = testCtrl.createTestItem(v.target, v.target, undefined);
+			sct.canResolveChildren = true;
 			suite.children.add(sct);
+			suite.canResolveChildren = true;
 			getTestcaseList(outputChannel, '/sdk/prefix_root_NATIVE-gcc/usr/bin/ntt', v.root_dir).then((list: Ttcn3Test[]) => {
 				outputChannel.appendLine(`Detected ${list.length} tests from ${v.target}`);
 				const file2Tests = new Map<string, string[]>();
@@ -322,13 +382,12 @@ export function activate(context: ExtensionContext) {
 						const tc = testCtrl.createTestItem(tcName.concat(k), tcName, undefined);
 						mod.children.add(tc);
 					})
+					mod.canResolveChildren = true;
 				});
 			});
 		})
 		testCtrl.items.add(suite);
 	})
-
-
 }
 
 async function withSpinningStatus(context: vscode.ExtensionContext, action: (status: Status) => Promise<void>): Promise<void> {
