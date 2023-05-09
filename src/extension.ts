@@ -50,16 +50,37 @@ function findTtcn3Suite(ws: readonly vscode.WorkspaceFolder[] | undefined): Ws2S
 	});
 	return ws2suite;
 }
+
+function getBinaryDir(outCh: vscode.OutputChannel, tc: vscode.TestItem): string {
+	for (let r: vscode.TestItem | undefined = tc; r != undefined; r = r.parent) {
+		const data = testData.get(r)
+		if (data instanceof WorkspaceData) {
+			return data.build_dir;
+		}
+	}
+	return "";
+}
+
+function getSuiteTarget(tc: vscode.TestItem): string {
+	for (let r: vscode.TestItem | undefined = tc; r != undefined; r = r.parent) {
+		const data = testData.get(r);
+		if (data instanceof TestSuiteData) {
+			return data.target;
+		}
+	}
+	return "";
+}
+
 function readTtcn3Suite(fileName: string): Ttcn3SuiteType {
 	let content = fs.readFileSync(fileName, 'utf8');
 	let obj: Ttcn3SuiteType = JSON.parse(content);
 	return obj;
 }
 
-async function getTestcaseList(outCh: vscode.OutputChannel, exe: string, pathToYml: string): Promise<Ttcn3Test[]> {
+async function getTestcaseList(runInst: vscode.OutputChannel, exe: string, pathToYml: string): Promise<Ttcn3Test[]> {
 	let tcList: Ttcn3Test[] = [];
 	const child = child_process.spawn(exe, ['list', pathToYml, '--json']);
-	outCh.appendLine(`about to execute ${exe} list ${pathToYml} --json`);
+	runInst.appendLine(`about to execute ${exe} list ${pathToYml} --json`);
 	child.on("error", (err: Error) => {
 		stderrBuf = stderrBuf.concat(`Execution of ${exe} finished with: ${err}`);
 	})
@@ -80,11 +101,11 @@ async function getTestcaseList(outCh: vscode.OutputChannel, exe: string, pathToY
 	const exitCode = new Promise<string>((resolve, reject) => {
 		child.on('close', (code) => {
 			if (code == 0) {
-				outCh.appendLine(`on closing pipe: code=${code}. Calling resolve passing ${stdoutBuf.length} bytes`);
+				runInst.appendLine(`on closing pipe: code=${code}. Calling resolve passing ${stdoutBuf.length} bytes`);
 				resolve(stdoutBuf);
 			}
 			else {
-				outCh.appendLine(`on closing pipe: code=${code}. Calling reject passing ${stderrBuf}`)
+				runInst.appendLine(`on closing pipe: code=${code}. Calling reject passing ${stderrBuf}`)
 				reject(stderrBuf);
 			}
 		});
@@ -94,13 +115,13 @@ async function getTestcaseList(outCh: vscode.OutputChannel, exe: string, pathToY
 	await exitCode.then((buf: string) => {
 		if (buf.length > 0) {
 			tcList = JSON.parse(buf);
-			outCh.appendLine(`after JSON parsing: tcList len: ${tcList.length}`);
+			runInst.appendLine(`after JSON parsing: tcList len: ${tcList.length}`);
 		}
 		if (stderrBuf.length > 0) {
-			outCh.appendLine(`stderr of ${exe}: ${stderrBuf}`);
+			runInst.appendLine(`stderr of ${exe}: ${stderrBuf}`);
 		}
 	}, (reason) => {
-		outCh.appendLine(`exec promise rejected: ${reason}`);
+		runInst.appendLine(`exec promise rejected: ${reason}`);
 	});
 
 	return new Promise<Ttcn3Test[]>((resolve) => {
@@ -108,10 +129,71 @@ async function getTestcaseList(outCh: vscode.OutputChannel, exe: string, pathToY
 	})
 }
 
+async function executeTest(runInst: vscode.TestRun, exe: string, buildDir: string, target: string, tcs: vscode.TestItem[]): Promise<void> {
+	let testsRegex = "";
+	const envForTest = process;
+	tcs.forEach((tc, idx) => {
+		if (idx > 0) {
+			testsRegex += '|';
+		}
+		testsRegex += tc.label;
+	})
+	envForTest.env['SCT_TEST_PATTERNS'] = `"${testsRegex}"`;
+
+	const child = child_process.spawn(exe, ['--build', buildDir, '--target', target], { env: process.env });
+	runInst.appendOutput(`about to execute ${exe} --build ${buildDir} --target ${target}\n`);
+	child.on("error", (err: Error) => {
+		stderrBuf = stderrBuf.concat(`Execution of ${exe} finished with: ${err}`);
+	})
+	let stdoutBuf = "";
+	let stderrBuf = "";
+	child.stdout.setEncoding('utf8'); // for text chunks
+	child.stderr.setEncoding('utf8'); // for text chunks
+	child.stdout.on('data', (chunk) => {
+		// data from standard output is here as buffers
+		stdoutBuf = stdoutBuf.concat(chunk);
+		runInst.appendOutput(chunk);
+	});
+
+	child.stderr.on('data', (chunk) => {
+		// data from standard error is here as buffers
+		stderrBuf = stderrBuf.concat(chunk);
+	});
+
+	const exitCode = new Promise<number>((resolve, reject) => {
+		child.on('close', (code) => {
+			if (code == 0) {
+				runInst.appendOutput(`on closing pipe: code=${code}. Calling resolve passing ${stdoutBuf.length} bytes`);
+				resolve(code);
+			}
+			else {
+				runInst.appendOutput(`on closing pipe: code=${code}. Calling reject passing ${stderrBuf}`)
+				reject(code);
+			}
+		});
+	});
+
+	// attention: without await we are not stopping here!
+	await exitCode.then((val: number) => {
+		if (stderrBuf.length > 0) {
+			runInst.appendOutput(`stderr of ${exe}: ${stderrBuf}`);
+		}
+	}, (val: number) => {
+		runInst.appendOutput(`exec promise rejected: ${val}`);
+		runInst.appendOutput(`retrieving test verdicts`);
+	});
+	runInst.appendOutput(`tests exit with stderr: ${stderrBuf}`);
+	return new Promise<void>((resolve) => {
+		resolve();
+	})
+}
+
 class TestSession {
 	constructor(
 		private readonly name: string,
-		private readonly runInst: vscode.TestRun
+		private readonly buildDir: string,
+		private readonly target: string,
+		//private runInst: vscode.TestRun
 	) {
 		this.testList = [];
 	}
@@ -123,17 +205,16 @@ class TestSession {
 	addTest(item: vscode.TestItem) {
 		this.testList.push(item);
 	}
-	async run(): Promise<void> {
+	async run(runInst: vscode.TestRun): Promise<void> {
 		const start = Date.now();
 
-		await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 1000)); // simulating a random longer time for execution
+		await executeTest(runInst, '/home/ut/bin/mycmake', this.buildDir, this.target, this.testList);
 		const exitVal = this.execute();
 		const duration = Date.now() - start;
 		this.testList.forEach(v => {
-			this.runInst.appendOutput(`finished execution of ${v.id}`);
-			this.runInst.passed(v, duration); // TODO: for the moment it shall always pass
+			runInst.appendOutput(`finished execution of ${v.id}\n`);
+			runInst.passed(v, duration); // TODO: for the moment it shall always pass
 		})
-
 		/*	const message = vscode.TestMessage.diff(`Expected ${item.label}`, String(this.expected), String(actual));
 			message.location = new vscode.Location(item.uri!, item.range!);
 			options.failed(item, message, duration);*/
@@ -143,10 +224,42 @@ class TestSession {
 	private execute() {
 		return 0
 	}
+
 	private testList: vscode.TestItem[];
 }
 
-class TestCase {
+interface Labler {
+	getLabel(): string;
+}
+class WorkspaceData implements Labler {
+	constructor(
+		readonly build_dir: string
+	) { }
+	getLabel() {
+		return `this is a WorkspaceData called ${this.build_dir}`;
+	}
+}
+
+class TestSuiteData implements Labler {
+	constructor(
+		readonly target: string
+	) { }
+
+	getLabel() {
+		return `this is a TestSuiteData called ${this.target}`;
+	}
+}
+
+class ModuleData implements Labler {
+	constructor(
+		private readonly file_name: string
+	) { }
+
+	getLabel() {
+		return `this is a ModuleData called ${this.file_name}`;
+	}
+}
+class TestCase implements Labler {
 	constructor(
 		private readonly label: string
 	) { }
@@ -175,7 +288,7 @@ class TestCase {
 	}
 }
 
-class TestFile {
+class TestFile implements Labler {
 	public didResolve = false;
 
 	public async updateFromDisk(controller: vscode.TestController, item: vscode.TestItem) {
@@ -213,9 +326,12 @@ class TestFile {
 
 		ascend(0); // finish and assign children for all remaining items
 	}
+	getLabel(): string {
+		return `this is TestFile data`
+	}
 }
 
-type Ttcn3TestData = TestFile | TestCase;
+type Ttcn3TestData = TestFile | TestCase | WorkspaceData | TestSuiteData | ModuleData;
 const testData = new WeakMap<vscode.TestItem, Ttcn3TestData>();
 class TestRunRequest2 extends TestRunRequest {
 	/**
@@ -287,18 +403,8 @@ export function activate(context: ExtensionContext) {
 	const startTestRun = (request: vscode.TestRunRequest) => {
 		const queue: { test: vscode.TestItem; data: TestCase }[] = [];
 		const run = testCtrl.createTestRun(request);
-		const testSession = new TestSession(request.profile!.label, run);
-		const excludeTests: vscode.TestItem[] = [];
-		var mixedExcludeList: vscode.TestItem[] = [];
-		mixedExcludeList.concat(request.exclude ? request.exclude : []);
-		for (let i = 0; i < mixedExcludeList!.length; i++) {
-			if (mixedExcludeList![i].canResolveChildren) {
-				mixedExcludeList![i].children.forEach(item => { mixedExcludeList!.push(item); })
-			}
-			else {
-				excludeTests.push(mixedExcludeList[i]);
-			}
-		};
+		const testSessions: Map<string, TestSession> = new Map<string, TestSession>();
+		const excludeTests = expandExcludeTestList(request);
 		outputChannel.appendLine(`param provided to startTestRun: ${request.profile!.label}`);
 		const discoverTests = async (tests: Iterable<vscode.TestItem>) => {
 			// tests includes all the tests or parent tree nodes which are marked(UI) for a session
@@ -317,7 +423,13 @@ export function activate(context: ExtensionContext) {
 				if (test.canResolveChildren === false) {
 					// only real tests shall be marked as enqueued
 					run.enqueued(test); // only an indication for the UI
-					testSession.addTest(test);
+					const binDir = getBinaryDir(outputChannel, test);
+					const suiteTarget = getSuiteTarget(test);
+					if (testSessions.get(suiteTarget) === undefined) {
+						outputChannel.appendLine(`start new TestSession with target ${suiteTarget}, binDir: ${binDir}`);
+						testSessions.set(suiteTarget, new TestSession(request.profile!.label, binDir, suiteTarget));
+					}
+					testSessions.get(suiteTarget)!.addTest(test);
 					continue;
 				}
 				test.children.forEach(item => { testsOnly.push(item) });
@@ -325,20 +437,9 @@ export function activate(context: ExtensionContext) {
 		};
 
 		const runTestQueue = async () => {
-			await testSession.run();
-			/*for (const { test, data } of queue) {
-				run.appendOutput(`Running ${test.id}\r\n`);
-				if (run.token.isCancellationRequested) {
-					run.skipped(test); // only an indication for the UI
-				} else {
-					run.started(test); // only an indication for the UI
-					await data.run(test, run);
-				}
-
-				//const lineNo = test.range!.start.line;
-
-				run.appendOutput(`Completed ${test.id}\r\n`);
-			}*/
+			for (const testSession of testSessions) {
+				await testSession[1].run(run);
+			};
 			run.appendOutput(`Completed session ${request.profile!.label}`);
 			run.end();
 		};
@@ -357,14 +458,17 @@ export function activate(context: ExtensionContext) {
 	const from_ttcn3_suites = findTtcn3Suite(vscode.workspace.workspaceFolders);
 	from_ttcn3_suites.forEach((v: string, k: string) => {
 		outputChannel.append(`Detected a suite in workspace: ${v}\n`);
-		const suite = testCtrl.createTestItem(k, k, undefined);
+		const ws = testCtrl.createTestItem(k, k, undefined);
 		const content = readTtcn3Suite(v);
-		outputChannel.appendLine(`content from ttcn3_suites.json: ${JSON.stringify(content)}\n`);
+
+		outputChannel.appendLine(`content of ws ${JSON.stringify(content)}\n`);
 		content.suites.forEach((v: TcSuite, idx: number, list: TcSuite[]) => {
 			const sct = testCtrl.createTestItem(v.target, v.target, undefined);
+			const suite = new TestSuiteData(v.target);
+			testData.set(sct, suite);
 			sct.canResolveChildren = true;
-			suite.children.add(sct);
-			suite.canResolveChildren = true;
+			ws.children.add(sct);
+			ws.canResolveChildren = true;
 			getTestcaseList(outputChannel, '/sdk/prefix_root_NATIVE-gcc/usr/bin/ntt', v.root_dir).then((list: Ttcn3Test[]) => {
 				outputChannel.appendLine(`Detected ${list.length} tests from ${v.target}`);
 				const file2Tests = new Map<string, string[]>();
@@ -377,6 +481,8 @@ export function activate(context: ExtensionContext) {
 				});
 				file2Tests.forEach((v, k) => {
 					const mod = testCtrl.createTestItem(k, k, undefined);
+					const moduleData = new ModuleData(k);
+					testData.set(mod, moduleData);
 					sct.children.add(mod);
 					v.forEach(tcName => {
 						const tc = testCtrl.createTestItem(tcName.concat(k), tcName, undefined);
@@ -385,9 +491,27 @@ export function activate(context: ExtensionContext) {
 					mod.canResolveChildren = true;
 				});
 			});
-		})
-		testCtrl.items.add(suite);
+		});
+		outputChannel.appendLine(`integrating workSpaceData into map with key: ${JSON.stringify(ws)}`);
+		const workspace = new WorkspaceData(content.binary_dir);
+		testData.set(ws, workspace);
+		testCtrl.items.add(ws);
 	})
+}
+
+function expandExcludeTestList(request: vscode.TestRunRequest) {
+	const excludeTests: vscode.TestItem[] = [];
+	var mixedExcludeList: vscode.TestItem[] = [];
+	mixedExcludeList.concat(request.exclude ? request.exclude : []);
+	for (let i = 0; i < mixedExcludeList!.length; i++) {
+		if (mixedExcludeList![i].canResolveChildren) {
+			mixedExcludeList![i].children.forEach(item => { mixedExcludeList!.push(item); });
+		}
+		else {
+			excludeTests.push(mixedExcludeList[i]);
+		}
+	};
+	return excludeTests;
 }
 
 async function withSpinningStatus(context: vscode.ExtensionContext, action: (status: Status) => Promise<void>): Promise<void> {
