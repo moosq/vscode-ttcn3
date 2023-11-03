@@ -138,14 +138,39 @@ export function activate(context: ExtensionContext) {
 			const isTtcn3File = ((e !== undefined) && (e.document.fileName.endsWith('.ttcn3')));
 			const name = (isTtcn3File) ? e.document.fileName : "no ttcn-3 file";
 
-			const currFile = testCtrl.createTestItem("current active file", name, undefined);
+			const currFile = testCtrl.createTestItem("current active file", "current active file", undefined);
 			currFile.canResolveChildren = isTtcn3File;
+			if (isTtcn3File) {
+				ntt.getTestcaseList(outputChannel, '/sdk/prefix_root_NATIVE-gcc/usr/bin/ntt', e.document.fileName).then((list: ntt.Ttcn3Test[]) => {
+					const file2Tests = new Map<string, ntt.Ttcn3Test[]>();
+					list.forEach((vtc: ntt.Ttcn3Test, idx: number, a: ntt.Ttcn3Test[]) => {
+						if (file2Tests.has(vtc.filename)) {
+							file2Tests.get(vtc.filename)!.push(vtc);
+						} else {
+							file2Tests.set(vtc.filename, [vtc]);
+						}
+					});
+					file2Tests.forEach((v, k) => {
+						const mod = testCtrl.createTestItem(k, k, undefined);
+						const moduleData = new tcm.ModuleData(k);
+						tcm.testData.set(mod, moduleData);
+						currFile.children.add(mod);
+						vscode.Uri
+						v.forEach(tcName => {
+							const tcUri = vscode.Uri.file(k)
+							const tc = testCtrl.createTestItem(tcName.id.concat(k), tcName.id, tcUri.with({ fragment: String(tcName.line) }));
+							mod.children.add(tc);
+						})
+						mod.canResolveChildren = true;
+					});
+				})
+			}
 			testCtrl.items.add(currFile);
 		},))
 	const isTtcn3File = ((vscode.window.activeTextEditor !== undefined) && (vscode.window.activeTextEditor.document.fileName.endsWith('.ttcn3')));
 	const name = ((vscode.window.activeTextEditor !== undefined) && isTtcn3File) ? vscode.window.activeTextEditor.document.fileName : "no ttcn-3 file";
 
-	const currFile = testCtrl.createTestItem("current active file", name, undefined);
+	const currFile = testCtrl.createTestItem("current active file", "current active file", undefined);
 	currFile.canResolveChildren = true;
 	testCtrl.items.add(currFile);
 }
