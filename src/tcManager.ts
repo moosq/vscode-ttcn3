@@ -133,7 +133,7 @@ class TestSession implements Labler {
 		const exitVal = this.execute();
 		const duration = Date.now() - start;
 		this.testList.forEach(v => {
-			runInst.appendOutput(`finished execution of ${v.id}\n`);
+			runInst.appendOutput(`finished execution of ${v.id}\r\n`);
 			runInst.passed(v, duration); // TODO: for the moment it shall always pass
 		})
 		/*	const message = vscode.TestMessage.diff(`Expected ${item.label}`, String(this.expected), String(actual));
@@ -249,33 +249,35 @@ async function executeTest(runInst: vscode.TestRun, exe: string, buildDir: strin
 	envForTest.env['SCT_TEST_PATTERNS'] = `"${testsRegex}"`;
 
 	const child = child_process.spawn(exe, ['--build', buildDir, '--target', target], { env: process.env });
-	runInst.appendOutput(`about to execute ${exe} --build ${buildDir} --target ${target}\n`);
+	runInst.appendOutput(`about to execute ${exe} --build ${buildDir} --target ${target}\r\n`);
 	child.on("error", (err: Error) => {
-		stderrBuf = stderrBuf.concat(`Execution of ${exe} finished with: ${err}`);
+		stderrBuf = stderrBuf.concat(`Execution of ${exe} finished with: ${err}\r\n`);
 	})
 	let stdoutBuf = "";
 	let stderrBuf = "";
 	child.stdout.setEncoding('utf8'); // for text chunks
 	child.stderr.setEncoding('utf8'); // for text chunks
-	child.stdout.on('data', (chunk) => {
+	child.stdout.on('data', (chunk: string) => {
 		// data from standard output is here as buffers
+		chunk = chunk.replace(/\n/g, '\r\n');
 		stdoutBuf = stdoutBuf.concat(chunk);
 		runInst.appendOutput(chunk);
 	});
 
-	child.stderr.on('data', (chunk) => {
+	child.stderr.on('data', (chunk: string) => {
 		// data from standard error is here as buffers
+		chunk = chunk.replace(/\n/g, '\r\n');
 		stderrBuf = stderrBuf.concat(chunk);
 	});
 
 	const exitCode = new Promise<number>((resolve, reject) => {
-		child.on('close', (code) => {
-			if (code == 0) {
-				runInst.appendOutput(`on closing pipe: code=${code}. Calling resolve passing ${stdoutBuf.length} bytes`);
+		child.on('close', (code, signal: NodeJS.Signals) => {
+			if (code == 0 && signal == null) {
+				runInst.appendOutput(`on closing pipe: code=${code}. Calling resolve passing ${stdoutBuf.length} bytes\r\n`);
 				resolve(code);
 			}
 			else {
-				runInst.appendOutput(`on closing pipe: code=${code}. Calling reject passing ${stderrBuf}`)
+				runInst.appendOutput(`on closing pipe: code=${code}, signal=${signal}. Calling reject passing\r\n${stderrBuf}\r\n`)
 				reject(code);
 			}
 		});
@@ -284,13 +286,14 @@ async function executeTest(runInst: vscode.TestRun, exe: string, buildDir: strin
 	// attention: without await we are not stopping here!
 	await exitCode.then((val: number) => {
 		if (stderrBuf.length > 0) {
-			runInst.appendOutput(`stderr of ${exe}: ${stderrBuf}`);
+			//stderrBuf = stderrBuf.replace('\n', '\r\n');
+			runInst.appendOutput(`stderr of ${exe}:\r\n${stderrBuf}\r\n`);
 		}
 	}, (val: number) => {
-		runInst.appendOutput(`exec promise rejected: ${val}`);
-		runInst.appendOutput(`retrieving test verdicts`);
+		runInst.appendOutput(`exec promise rejected: ${val}\r\n`);
+		runInst.appendOutput(`retrieving test verdicts\r\n`);
 	});
-	runInst.appendOutput(`tests exit with stderr: ${stderrBuf}`);
+	runInst.appendOutput(`tests exit with stderr:\r\n${stderrBuf}\r\n`);
 	return new Promise<void>((resolve) => {
 		resolve();
 	})
