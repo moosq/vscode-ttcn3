@@ -140,7 +140,7 @@ export async function activate(context: ExtensionContext) {
 		outputChannel.appendLine(`suites ${v} has been completed. Content of ${JSON.stringify(globFileToTcSuite)}`);
 	})
 	await Promise.all(tcListsReady);
-	outputChannel.appendLine(`all suites have been completed. size of ${globFileToTcSuite}`);
+	outputChannel.appendLine(`all suites have been completed. size of ${globFileToTcSuite.size}`);
 	context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(
 		(e: vscode.TextEditor | undefined) => {
 			outputChannel.appendLine(`filename of the newly selected window: ${e?.document.fileName},${e}`);
@@ -182,8 +182,10 @@ export async function activate(context: ExtensionContext) {
 						mod.canResolveChildren = true;
 					});
 				})
+				testCtrl.items.add(currFile);
+				return;
 			}
-			testCtrl.items.add(currFile);
+			testCtrl.items.delete("current active file");
 		},));
 	{
 		// TODO: at this stage the globFileToTcSuite map doesn't seem to be completelly initialized. Resolve this async behaviour!
@@ -226,8 +228,10 @@ export async function activate(context: ExtensionContext) {
 					mod.canResolveChildren = true;
 				});
 			})
+			testCtrl.items.add(currFile);
+		} else {
+			testCtrl.items.delete("current active file");
 		}
-		testCtrl.items.add(currFile);
 	}
 }
 
