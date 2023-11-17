@@ -2,25 +2,17 @@ import * as child_process from "child_process";
 import * as vscode from 'vscode'
 
 let generationCounter = 0;
-type Ttcn3TestData = TestFile | TestCase | WorkspaceData | TestSuiteData | ModuleData;
+type Ttcn3TestData = TestFile | TestCase | TestSuiteData | ModuleData;
 export const testData = new WeakMap<vscode.TestItem, Ttcn3TestData>();
 
 interface Labler {
 	getLabel(): string;
 }
 
-export class WorkspaceData implements Labler {
-	constructor(
-		readonly build_dir: string
-	) { }
-	getLabel() {
-		return `this is a WorkspaceData called ${this.build_dir}`;
-	}
-}
-
 export class TestSuiteData implements Labler {
 	constructor(
-		readonly target: string
+		readonly target: string,
+		readonly build_dir: string
 	) { }
 
 	getLabel() {
@@ -152,7 +144,7 @@ class TestSession implements Labler {
 function getBinaryDir(outCh: vscode.OutputChannel, tc: vscode.TestItem): string {
 	for (let r: vscode.TestItem | undefined = tc; r != undefined; r = r.parent) {
 		const data = testData.get(r)
-		if (data instanceof WorkspaceData) {
+		if (data instanceof TestSuiteData) {
 			return data.build_dir;
 		}
 	}
@@ -246,7 +238,7 @@ async function executeTest(runInst: vscode.TestRun, exe: string, buildDir: strin
 		}
 		testsRegex += tc.label;
 	})
-	envForTest.env['SCT_TEST_PATTERNS'] = `"${testsRegex}"`;
+	envForTest.env['SCT_TEST_PATTERNS'] = `"^(${testsRegex})$"`;
 
 	const child = child_process.spawn(exe, ['--build', buildDir, '--target', target], { env: process.env });
 	runInst.appendOutput(`about to execute ${exe} --build ${buildDir} --target ${target}\r\n`);

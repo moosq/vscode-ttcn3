@@ -7,6 +7,14 @@ export interface TcSuite {
 	source_dir: string
 	target: string
 }
+
+export interface OneTtcn3Suite {
+	root_dir: string
+	source_dir: string
+	binary_dir: string
+	target: string
+}
+
 interface Ttcn3SuiteType {
 	source_dir: string
 	binary_dir: string
