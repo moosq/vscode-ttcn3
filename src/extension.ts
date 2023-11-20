@@ -112,32 +112,29 @@ export async function activate(context: ExtensionContext) {
 			tcListsReady.push(ntt.getTestcaseList(outputChannel, '/sdk/prefix_root_NATIVE-gcc/usr/bin/ntt', v.root_dir).then(function (list: ntt.Ttcn3Test[]) {
 				outputChannel.appendLine(`Detected ${list.length} tests from ${v.target}`);
 				const file2Tests = new Map<string, ntt.Ttcn3Test[]>();
+				let mod: vscode.TestItem;
 				list.forEach(function (vtc: ntt.Ttcn3Test, idx: number, a: ntt.Ttcn3Test[]) {
 					if (file2Tests.has(vtc.filename)) {
 						file2Tests.get(vtc.filename)!.push(vtc);
 					} else {
+						mod = testCtrl.createTestItem(vtc.filename, vtc.filename, undefined);
+						sct.children.add(mod);
+						mod.canResolveChildren = true;
+						const moduleData = new tcm.ModuleData(vtc.filename);
+						tcm.testData.set(mod, moduleData);
+
 						file2Tests.set(vtc.filename, [vtc]);
 						outputChannel.appendLine(`adding content to globFileToTcSuite: ${vtc.filename}=${JSON.stringify(v)}`);
-						globFileToTcSuite.set(vtc.filename, { source_dir: v.source_dir, root_dir: v.root_dir, binary_dir: content.binary_dir, target: v.target });
-						outputChannel.appendLine(`adding content to globFileToTcSuite size=${globFileToTcSuite.size}: ${JSON.stringify(globFileToTcSuite)}`);
+						globFileToTcSuite.set(vtc.filename, { source_dir: v.source_dir, root_dir: v.root_dir, binary_dir: content.binary_dir, target: v.target, ui_tcmodule: mod });
+						outputChannel.appendLine(`adding content to globFileToTcSuite size=${globFileToTcSuite.size}`);
 					}
-				});
-				file2Tests.forEach((v, k) => {
-					const mod = testCtrl.createTestItem(k, k, undefined);
-					const moduleData = new tcm.ModuleData(k);
-					tcm.testData.set(mod, moduleData);
-					sct.children.add(mod);
-
-					v.forEach(tcName => {
-						const tcUri = vscode.Uri.file(k)
-						const tc = testCtrl.createTestItem(tcName.id.concat(k), tcName.id, tcUri.with({ fragment: String(tcName.line) }));
-						mod.children.add(tc);
-					})
-					mod.canResolveChildren = true;
+					const tcUri = vscode.Uri.file(vtc.filename)
+					const tc = testCtrl.createTestItem(vtc.id.concat(vtc.filename), vtc.id, tcUri.with({ fragment: String(vtc.line) }));
+					mod.children.add(tc);
 				});
 			}));
 		});
-		outputChannel.appendLine(`suites ${v} has been completed. Content of ${JSON.stringify(globFileToTcSuite)}`);
+		outputChannel.appendLine(`suites ${v} has been completed. Size of globFileToTcSuite ${globFileToTcSuite.size}`);
 	})
 	await Promise.all(tcListsReady);
 	outputChannel.appendLine(`all suites have been completed. size of ${globFileToTcSuite.size}`);
@@ -162,7 +159,7 @@ export async function activate(context: ExtensionContext) {
 
 function generateTcListForCurrFile(testCtrl: vscode.TestController, globFileToTcSuite: Map<string, ttcn3_suites.OneTtcn3Suite>, name: string, isTtcn3File: boolean) {
 	{
-		const currFile = testCtrl.createTestItem("current active file", "current active file", undefined);
+		const currFile = testCtrl.createTestItem("active file", "active file", undefined);
 		currFile.canResolveChildren = false;
 		if (isTtcn3File) {
 			ntt.getTestcaseList(outputChannel, '/sdk/prefix_root_NATIVE-gcc/usr/bin/ntt', name).then((list: ntt.Ttcn3Test[]) => {
@@ -178,22 +175,30 @@ function generateTcListForCurrFile(testCtrl: vscode.TestController, globFileToTc
 					let sData: tcm.TestSuiteData;
 					currFile.canResolveChildren = true;
 					const mod = testCtrl.createTestItem(k, k, undefined);
+					const mod_active = testCtrl.createTestItem(k, k, undefined); // a new object is needed, as sharing only one in two different branches of the test tree doesn't seem to work
 					const moduleData = new tcm.ModuleData(k);
 					if (globFileToTcSuite.has(k)) {
 						const isPartOfSuite = globFileToTcSuite.get(k)!;
+						outputChannel.appendLine(`the parent of  key: ${k}= ${isPartOfSuite.ui_tcmodule.parent} with size ${isPartOfSuite.ui_tcmodule.parent?.children.size} children`);
+						tcm.testData.delete(isPartOfSuite.ui_tcmodule);
+						isPartOfSuite.ui_tcmodule.parent?.children.add(mod); // exchange the module branch inside the tc suite
+						isPartOfSuite.ui_tcmodule = mod;
+						globFileToTcSuite.set(k, isPartOfSuite);
 						outputChannel.appendLine(`isPartOfSuite: ${JSON.stringify(isPartOfSuite.root_dir)} for key: ${k}`);
 						sData = new tcm.TestSuiteData(isPartOfSuite.target, isPartOfSuite.binary_dir);
 					} else {
 						sData = new tcm.TestSuiteData("", "");
 					}
 					tcm.testData.set(mod, moduleData);
-					currFile.children.add(mod);
+					currFile.children.add(mod_active);
 					tcm.testData.set(currFile, sData);
 					vscode.Uri;
 					v.forEach(tcName => {
 						const tcUri = vscode.Uri.file(k);
 						const tc = testCtrl.createTestItem(tcName.id.concat(k), tcName.id, tcUri.with({ fragment: String(tcName.line) }));
+						const tc_active = testCtrl.createTestItem(tcName.id.concat(k), tcName.id, tcUri.with({ fragment: String(tcName.line) }));
 						mod.children.add(tc);
+						mod_active.children.add(tc_active);
 					});
 					mod.canResolveChildren = true;
 				});
