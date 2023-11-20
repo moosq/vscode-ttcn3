@@ -146,52 +146,15 @@ export async function activate(context: ExtensionContext) {
 			outputChannel.appendLine(`filename of the newly selected window: ${e?.document.fileName},${e}`);
 			const isTtcn3File = ((e !== undefined) && (e.document.fileName.endsWith('.ttcn3')));
 			const name = (isTtcn3File) ? e.document.fileName : "no ttcn-3 file";
-
-			const currFile = testCtrl.createTestItem("current active file", "current active file", undefined);
-			currFile.canResolveChildren = isTtcn3File;
-			if (isTtcn3File) {
-				ntt.getTestcaseList(outputChannel, '/sdk/prefix_root_NATIVE-gcc/usr/bin/ntt', e.document.fileName).then((list: ntt.Ttcn3Test[]) => {
-					const file2Tests = new Map<string, ntt.Ttcn3Test[]>();
-					list.forEach((vtc: ntt.Ttcn3Test, idx: number, a: ntt.Ttcn3Test[]) => {
-						if (file2Tests.has(vtc.filename)) {
-							file2Tests.get(vtc.filename)!.push(vtc);
-						} else {
-							file2Tests.set(vtc.filename, [vtc]);
-						}
-					});
-					file2Tests.forEach((v, k) => {
-						const mod = testCtrl.createTestItem(k, k, undefined);
-						const moduleData = new tcm.ModuleData(k);
-						let sData: tcm.TestSuiteData;
-						if (globFileToTcSuite.has(k)) {
-							const isPartOfSuite = globFileToTcSuite.get(k)!
-							sData = new tcm.TestSuiteData(isPartOfSuite.target, isPartOfSuite.binary_dir)
-						}
-						else {
-							sData = new tcm.TestSuiteData("", "");
-						}
-						tcm.testData.set(mod, moduleData);
-						currFile.children.add(mod);
-						tcm.testData.set(currFile, sData);
-						vscode.Uri
-						v.forEach(tcName => {
-							const tcUri = vscode.Uri.file(k)
-							const tc = testCtrl.createTestItem(tcName.id.concat(k), tcName.id, tcUri.with({ fragment: String(tcName.line) }));
-							mod.children.add(tc);
-						})
-						mod.canResolveChildren = true;
-					});
-				})
-				testCtrl.items.add(currFile);
-				return;
-			}
-			testCtrl.items.delete("current active file");
+			generateTcListForCurrFile(testCtrl, globFileToTcSuite, name, isTtcn3File);
 		},));
-	{
-		// TODO: at this stage the globFileToTcSuite map doesn't seem to be completelly initialized. Resolve this async behaviour!
-		const isTtcn3File = ((vscode.window.activeTextEditor !== undefined) && (vscode.window.activeTextEditor.document.fileName.endsWith('.ttcn3')));
-		const name = ((vscode.window.activeTextEditor !== undefined) && isTtcn3File) ? vscode.window.activeTextEditor.document.fileName : "no ttcn-3 file";
+	const isTtcn3File = ((vscode.window.activeTextEditor !== undefined) && (vscode.window.activeTextEditor.document.fileName.endsWith('.ttcn3')));
+	const name = ((vscode.window.activeTextEditor !== undefined) && isTtcn3File) ? vscode.window.activeTextEditor.document.fileName : "no ttcn-3 file";
+	generateTcListForCurrFile(testCtrl, globFileToTcSuite, name, isTtcn3File);
+}
 
+function generateTcListForCurrFile(testCtrl: vscode.TestController, globFileToTcSuite: Map<string, ttcn3_suites.OneTtcn3Suite>, name: string, isTtcn3File: boolean) {
+	{
 		const currFile = testCtrl.createTestItem("current active file", "current active file", undefined);
 		currFile.canResolveChildren = false;
 		if (isTtcn3File) {
@@ -210,7 +173,7 @@ export async function activate(context: ExtensionContext) {
 					const mod = testCtrl.createTestItem(k, k, undefined);
 					const moduleData = new tcm.ModuleData(k);
 					if (globFileToTcSuite.has(k)) {
-						const isPartOfSuite = globFileToTcSuite.get(k)!
+						const isPartOfSuite = globFileToTcSuite.get(k)!;
 						outputChannel.appendLine(`isPartOfSuite: ${JSON.stringify(isPartOfSuite.root_dir)} for key: ${k}`);
 						sData = new tcm.TestSuiteData(isPartOfSuite.target, isPartOfSuite.binary_dir);
 					} else {
@@ -219,15 +182,15 @@ export async function activate(context: ExtensionContext) {
 					tcm.testData.set(mod, moduleData);
 					currFile.children.add(mod);
 					tcm.testData.set(currFile, sData);
-					vscode.Uri
+					vscode.Uri;
 					v.forEach(tcName => {
-						const tcUri = vscode.Uri.file(k)
+						const tcUri = vscode.Uri.file(k);
 						const tc = testCtrl.createTestItem(tcName.id.concat(k), tcName.id, tcUri.with({ fragment: String(tcName.line) }));
 						mod.children.add(tc);
-					})
+					});
 					mod.canResolveChildren = true;
 				});
-			})
+			});
 			testCtrl.items.add(currFile);
 		} else {
 			testCtrl.items.delete("current active file");
