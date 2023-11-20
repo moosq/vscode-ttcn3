@@ -3,7 +3,7 @@ import path = require('path');
 import * as child_process from "child_process";
 import * as vscode from 'vscode';
 import { ExtensionContext, OutputChannel, TestRunRequest, TestRunProfileKind } from 'vscode';
-import { LanguageClient, LanguageClientOptions, ServerOptions, ExecuteCommandParams, ExecuteCommandRequest, DidChangeConfigurationParams, DidChangeConfigurationNotification, VersionedTextDocumentIdentifier } from 'vscode-languageclient/node';
+import { LanguageClient, LanguageClientOptions, ServerOptions, ExecuteCommandParams, ExecuteCommandRequest, DidChangeConfigurationParams, DidChangeConfigurationNotification, VersionedTextDocumentIdentifier, TextEdit } from 'vscode-languageclient/node';
 import * as ntt from './ntt';
 import * as tcm from './tcManager'
 import * as ttcn3_suites from "./ttcn3_suites"
@@ -146,6 +146,13 @@ export async function activate(context: ExtensionContext) {
 			outputChannel.appendLine(`filename of the newly selected window: ${e?.document.fileName},${e}`);
 			const isTtcn3File = ((e !== undefined) && (e.document.fileName.endsWith('.ttcn3')));
 			const name = (isTtcn3File) ? e.document.fileName : "no ttcn-3 file";
+			generateTcListForCurrFile(testCtrl, globFileToTcSuite, name, isTtcn3File);
+		},));
+	context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(
+		(e: vscode.TextDocument) => {
+			// TODO: this doesn't update the tc list for the complete workspace
+			const isTtcn3File = e.fileName.endsWith('.ttcn3');
+			const name = (isTtcn3File) ? e.fileName : "no ttcn-3 file";
 			generateTcListForCurrFile(testCtrl, globFileToTcSuite, name, isTtcn3File);
 		},));
 	const isTtcn3File = ((vscode.window.activeTextEditor !== undefined) && (vscode.window.activeTextEditor.document.fileName.endsWith('.ttcn3')));
