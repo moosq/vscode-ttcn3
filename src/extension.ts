@@ -15,6 +15,7 @@ import { O_SYMLINK } from 'constants';
 import { fsExists } from './util/fsUtils';
 import { Suite } from 'mocha';
 import { profile } from 'console';
+import { TestExecTaskProvider } from './testexecTaskProvider';
 
 let client: LanguageClient;
 let outputChannel: OutputChannel;
@@ -94,6 +95,7 @@ export async function activate(context: ExtensionContext) {
 	const from_ttcn3_suites = ttcn3_suites.findTtcn3Suite(vscode.workspace.workspaceFolders);
 	let globFileToTcSuite = new Map<string, ttcn3_suites.OneTtcn3Suite>();
 	const tcSuiteCreator = new TcSuiteCreator();
+	let suites: ttcn3_suites.Ttcn3SuiteType[] = [];
 	let tcListsReady: Promise<void>[] = [];
 	from_ttcn3_suites.forEach(function (v: string, k: string) {
 		outputChannel.append(`Detected a suite in workspace: ${v}\n`);
@@ -135,8 +137,11 @@ export async function activate(context: ExtensionContext) {
 			}));
 		});
 		outputChannel.appendLine(`suites ${v} has been completed. Size of globFileToTcSuite ${globFileToTcSuite.size}`);
+		suites = suites.concat(content);
 	})
 	await Promise.all(tcListsReady);
+	const testExecTaskProvider = vscode.tasks.registerTaskProvider(TestExecTaskProvider.TestExecType, new TestExecTaskProvider(suites));
+
 	outputChannel.appendLine(`all suites have been completed. size of ${globFileToTcSuite.size}`);
 	context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(
 		(e: vscode.TextEditor | undefined) => {
