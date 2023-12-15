@@ -240,7 +240,25 @@ async function executeTest(runInst: vscode.TestRun, exe: string, buildDir: strin
 	})
 	envForTest.env['SCT_TEST_PATTERNS'] = `"^(${testsRegex})$"`;
 
-	const child = child_process.spawn(exe, ['--build', buildDir, '--target', target], { env: process.env });
+	let filt: vscode.TaskFilter = { type: "exec_ttcn3" };
+	let label: string = "";
+	await vscode.tasks.fetchTasks(filt).then((cmdList: vscode.Task[]) => {
+		cmdList.forEach((task: vscode.Task) => {
+			runInst.appendOutput(`available tasks: ${task.name} from group. ${task.group?.id}, with type: ${task.definition.type}, source: ${task.source}, supplied target: ${target}\r\n`);
+			if (task.name == target) {
+				if (task.definition.type == "exec_ttcn3") {
+					label = `exec_ttcn3: ${target}`;
+				}
+			}
+		})
+	});
+	if (label !== "") {
+		// NOTE: executeCommand is superior to scode.tasks.executeTask. It takes into account configurations from
+		// tasks.json whereas the latter one supplied only config from taskProvider (at least in my case)
+		await vscode.commands.executeCommand("workbench.action.tasks.runTask", `${label}`);
+	}
+	runInst.appendOutput("Finished execution of my own task\r\n");
+	/*const child = child_process.spawn(exe, ['--build', buildDir, '--target', target], { env: process.env });
 	runInst.appendOutput(`about to execute ${exe} --build ${buildDir} --target ${target}\r\n`);
 	child.on("error", (err: Error) => {
 		stderrBuf = stderrBuf.concat(`Execution of ${exe} finished with: ${err}\r\n`);
@@ -285,7 +303,7 @@ async function executeTest(runInst: vscode.TestRun, exe: string, buildDir: strin
 		runInst.appendOutput(`exec promise rejected: ${val}\r\n`);
 		runInst.appendOutput(`retrieving test verdicts\r\n`);
 	});
-	runInst.appendOutput(`tests exit with stderr:\r\n${stderrBuf}\r\n`);
+	runInst.appendOutput(`tests exit with stderr:\r\n${stderrBuf}\r\n`);*/
 	return new Promise<void>((resolve) => {
 		resolve();
 	})
