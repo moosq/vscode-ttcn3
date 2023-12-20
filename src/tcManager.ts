@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import * as path from 'path';
 import * as child_process from "child_process";
 import * as vscode from 'vscode'
@@ -53,7 +54,8 @@ class K3sControlItf {
 			});
 		}
 		//connect();
-	} // 
+	}
+
 	shutdownK3s() {
 		const payload: K3sCtrlRequestMsg = { version: 1, msg: "shutdown" }
 		this.rInst.appendOutput("executing shutdownK3s\r\n");
@@ -61,6 +63,13 @@ class K3sControlItf {
 		this.sock.send(`${JSON.stringify(payload)}\n`);
 		this.sock.close();
 	}
+
+	runTest(tcName: string) {
+		const payload: K3sCtrlRequestMsg = { version: 1, msg: { test_name: tcName, instance: 1 } };
+		this.rInst.appendOutput(`about to send over ctrl.sock: ${JSON.stringify(payload)}\r\n`);
+		this.sock.send(`${JSON.stringify(payload)}\n`);
+	}
+
 	sock: UnixDgramSocket;
 	rInst: vscode.TestRun;
 }
@@ -310,23 +319,28 @@ async function executeTest(runInst: vscode.TestRun, exe: string, buildDir: strin
 	if (label !== "") {
 		// NOTE: executeCommand is superior to scode.tasks.executeTask. It takes into account configurations from
 		// tasks.json whereas the latter one supplied only config from taskProvider (at least in my case)
-
-		// watch for ctrl.sock to come alive
 		const ctrlSock = path.join(buildDir, 'ctrl.sock');
+
+		// delete old ctrl.sock file
+		if (fs.existsSync(ctrlSock)) {
+			runInst.appendOutput(`${ctrlSock} already existing, deleting it...\r\n`);
+			fs.unlinkSync(ctrlSock);
+		}
+		// watch for ctrl.sock to come alive
 		const fileWatcher = vscode.workspace.createFileSystemWatcher(ctrlSock);
-		let k3sExecPromise: Promise<boolean> = new Promise<boolean>(async (resolve) => {
+		let k3sExecPromise: Promise<boolean> = new Promise<boolean>((resolve) => {
 			runInst.appendOutput(`install fileWatcher for ${ctrlSock}\r\n`);
 			fileWatcher.onDidCreate(() => {
 				runInst.appendOutput(`${ctrlSock} creation detected\r\n`);
-				resolve(true);
+				return resolve(true);
 			});
 			fileWatcher.onDidChange(() => {
 				runInst.appendOutput(`${ctrlSock} change detected\r\n`);
-				resolve(true);
+				return resolve(true);
 			});
-			if (await fsExists(ctrlSock)) {
+			if (fs.existsSync(ctrlSock)) {
 				runInst.appendOutput(`${ctrlSock} already existing\r\n`);
-				resolve(true);
+				return resolve(true);
 			}
 		});
 		runInst.appendOutput("starting test task\r\n");
