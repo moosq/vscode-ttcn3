@@ -1,5 +1,10 @@
+import * as path from 'path';
 import * as child_process from "child_process";
 import * as vscode from 'vscode'
+import { UnixDgramSocket } from "unix-dgram-socket";
+import { toJSONObject } from "vscode-languageclient/lib/common/configuration";
+import { openStdin } from 'process';
+import { fsExists } from './util/fsUtils';
 
 let generationCounter = 0;
 type Ttcn3TestData = TestFile | TestCase | TestSuiteData | ModuleData;
@@ -9,6 +14,56 @@ interface Labler {
 	getLabel(): string;
 }
 
+type K3sCtrlCmd = string;
+type K3sCtrlRequest = {
+	test_name: string,
+	instance: number
+}
+interface K3sCtrlRequestMsg {
+	version: number,
+	msg: K3sCtrlCmd | K3sCtrlRequest
+}
+class K3sControlItf {
+	constructor(sockName: string, runInst: vscode.TestRun) {
+		this.sock = new UnixDgramSocket();
+		let retries = 10;
+		this.rInst = runInst;
+		this.sock.connect(sockName);
+		const connect = () => {
+
+			this.sock.on('data', (data) => {
+				runInst.appendOutput(`Received: ${data}\r\n`);
+				//this.sock.destroy();
+			});
+			this.sock.on('close', () => {
+				runInst.appendOutput('Connection closed\r\n');
+				if (retries > 0) {
+					retries--;
+					runInst.appendOutput(`Retrying in 5 seconds...\r\n`);
+					setTimeout(connect, 5000);
+				}
+			});
+			this.sock.on('error', (err) => {
+				runInst.appendOutput(`Connection error: ${err}\r\n`);
+				if (retries > 0) {
+					retries--;
+					runInst.appendOutput(`Retrying in 5 seconds...\r\n`);
+					setTimeout(connect, 5000);
+				}
+			});
+		}
+		//connect();
+	} // 
+	shutdownK3s() {
+		const payload: K3sCtrlRequestMsg = { version: 1, msg: "shutdown" }
+		this.rInst.appendOutput("executing shutdownK3s\r\n");
+		this.rInst.appendOutput(`about to send over ctrl.sock: ${JSON.stringify(payload)}\r\n`);
+		this.sock.send(`${JSON.stringify(payload)}\n`);
+		this.sock.close();
+	}
+	sock: UnixDgramSocket;
+	rInst: vscode.TestRun;
+}
 export class TestSuiteData implements Labler {
 	constructor(
 		readonly target: string,
@@ -239,12 +294,12 @@ async function executeTest(runInst: vscode.TestRun, exe: string, buildDir: strin
 		testsRegex += tc.label;
 	})
 	envForTest.env['SCT_TEST_PATTERNS'] = `"^(${testsRegex})$"`;
-
+	let waitForK3s: Thenable<unknown>;
 	let filt: vscode.TaskFilter = { type: "exec_ttcn3" };
 	let label: string = "";
 	await vscode.tasks.fetchTasks(filt).then((cmdList: vscode.Task[]) => {
 		cmdList.forEach((task: vscode.Task) => {
-			runInst.appendOutput(`available tasks: ${task.name} from group. ${task.group?.id}, with type: ${task.definition.type}, source: ${task.source}, supplied target: ${target}\r\n`);
+			runInst.appendOutput(`available tasks: ${task.name} from group. ${task.group?.id}, with type: ${task.definition.type}, source: ${task.source}, supplied target: ${target}, buildDir: ${buildDir}\r\n`);
 			if (task.name == target) {
 				if (task.definition.type == "exec_ttcn3") {
 					label = `exec_ttcn3: ${target}`;
@@ -255,7 +310,33 @@ async function executeTest(runInst: vscode.TestRun, exe: string, buildDir: strin
 	if (label !== "") {
 		// NOTE: executeCommand is superior to scode.tasks.executeTask. It takes into account configurations from
 		// tasks.json whereas the latter one supplied only config from taskProvider (at least in my case)
-		await vscode.commands.executeCommand("workbench.action.tasks.runTask", `${label}`);
+
+		// watch for ctrl.sock to come alive
+		const ctrlSock = path.join(buildDir, 'ctrl.sock');
+		const fileWatcher = vscode.workspace.createFileSystemWatcher(ctrlSock);
+		let k3sExecPromise: Promise<boolean> = new Promise<boolean>(async (resolve) => {
+			runInst.appendOutput(`install fileWatcher for ${ctrlSock}\r\n`);
+			fileWatcher.onDidCreate(() => {
+				runInst.appendOutput(`${ctrlSock} creation detected\r\n`);
+				resolve(true);
+			});
+			fileWatcher.onDidChange(() => {
+				runInst.appendOutput(`${ctrlSock} change detected\r\n`);
+				resolve(true);
+			});
+			if (await fsExists(ctrlSock)) {
+				runInst.appendOutput(`${ctrlSock} already existing\r\n`);
+				resolve(true);
+			}
+		});
+		runInst.appendOutput("starting test task\r\n");
+		waitForK3s = vscode.commands.executeCommand("workbench.action.tasks.runTask", `${label}`);
+		await k3sExecPromise;
+		runInst.appendOutput("try to connect to k3s...\r\n");
+		const k3sConnect = new K3sControlItf(path.join(buildDir, 'ctrl.sock'), runInst);
+		runInst.appendOutput("shutting down test task\r\n");
+		k3sConnect.shutdownK3s();
+		await waitForK3s;
 	}
 	runInst.appendOutput("Finished execution of my own task\r\n");
 	/*const child = child_process.spawn(exe, ['--build', buildDir, '--target', target], { env: process.env });
