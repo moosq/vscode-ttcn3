@@ -6,6 +6,7 @@ import { UnixDgramSocket } from "unix-dgram-socket";
 import { toJSONObject } from "vscode-languageclient/lib/common/configuration";
 import { openStdin } from 'process';
 import { fsExists } from './util/fsUtils';
+import { setTimeout } from 'timers';
 
 let generationCounter = 0;
 type Ttcn3TestData = TestFile | TestCase | TestSuiteData | ModuleData;
@@ -15,61 +16,52 @@ interface Labler {
 	getLabel(): string;
 }
 
-type K3sCtrlCmd = string;
+interface K3sCtrlCmd {
+	version: number,
+	command: string
+};
 type K3sCtrlRequest = {
+	version: number,
 	test_name: string,
 	instance: number
 }
-interface K3sCtrlRequestMsg {
-	version: number,
-	msg: K3sCtrlCmd | K3sCtrlRequest
-}
+
 class K3sControlItf {
 	constructor(sockName: string, runInst: vscode.TestRun) {
 		this.sock = new UnixDgramSocket();
 		let retries = 10;
 		this.rInst = runInst;
 		this.sock.connect(sockName);
-		const connect = () => {
+		this.sock.bind(sockName);
+		this.sockPath = sockName;
 
-			this.sock.on('data', (data) => {
-				runInst.appendOutput(`Received: ${data}\r\n`);
-				//this.sock.destroy();
-			});
-			this.sock.on('close', () => {
-				runInst.appendOutput('Connection closed\r\n');
-				if (retries > 0) {
-					retries--;
-					runInst.appendOutput(`Retrying in 5 seconds...\r\n`);
-					setTimeout(connect, 5000);
-				}
-			});
-			this.sock.on('error', (err) => {
-				runInst.appendOutput(`Connection error: ${err}\r\n`);
-				if (retries > 0) {
-					retries--;
-					runInst.appendOutput(`Retrying in 5 seconds...\r\n`);
-					setTimeout(connect, 5000);
-				}
-			});
+	}
+
+	private sendWretry(message: string, retryCnt: number) {
+		const retry = () => {
+			if (!this.sock.send(message) && retryCnt > 0) {
+				retryCnt--;
+				this.rInst.appendOutput(`Retry send in 0.5 seconds (${retryCnt} left)...\r\n`);
+				setTimeout(retry, 500);
+			}
 		}
-		//connect();
+		retry();
 	}
 
 	shutdownK3s() {
-		const payload: K3sCtrlRequestMsg = { version: 1, msg: "shutdown" }
+		const payload: K3sCtrlCmd = { version: 1, command: "shutdown" }
 		this.rInst.appendOutput("executing shutdownK3s\r\n");
 		this.rInst.appendOutput(`about to send over ctrl.sock: ${JSON.stringify(payload)}\r\n`);
-		this.sock.send(`${JSON.stringify(payload)}\n`);
+		this.sendWretry(`${JSON.stringify(payload)}\n`, 10)
 		this.sock.close();
 	}
 
 	runTest(tcName: string) {
-		const payload: K3sCtrlRequestMsg = { version: 1, msg: { test_name: tcName, instance: 1 } };
+		const payload: K3sCtrlRequest = { version: 1, test_name: tcName, instance: 1 };
 		this.rInst.appendOutput(`about to send over ctrl.sock: ${JSON.stringify(payload)}\r\n`);
-		this.sock.send(`${JSON.stringify(payload)}\n`);
+		this.sendWretry(`${JSON.stringify(payload)}\n`, 10)
 	}
-
+	sockPath: string;
 	sock: UnixDgramSocket;
 	rInst: vscode.TestRun;
 }
@@ -328,26 +320,34 @@ async function executeTest(runInst: vscode.TestRun, exe: string, buildDir: strin
 		}
 		// watch for ctrl.sock to come alive
 		const fileWatcher = vscode.workspace.createFileSystemWatcher(ctrlSock);
-		let k3sExecPromise: Promise<boolean> = new Promise<boolean>((resolve) => {
+		/*const k3sExecPromise= new Promise<boolean>  => {
 			runInst.appendOutput(`install fileWatcher for ${ctrlSock}\r\n`);
 			fileWatcher.onDidCreate(() => {
 				runInst.appendOutput(`${ctrlSock} creation detected\r\n`);
-				return resolve(true);
+				return true;
 			});
 			fileWatcher.onDidChange(() => {
 				runInst.appendOutput(`${ctrlSock} change detected\r\n`);
-				return resolve(true);
+				return (true);
 			});
 			if (fs.existsSync(ctrlSock)) {
 				runInst.appendOutput(`${ctrlSock} already existing\r\n`);
-				return resolve(true);
+				return (true);
 			}
-		});
+		});*/
+		const waitForK3sStartup = new Promise(resolve => fileWatcher.onDidCreate(resolve));
 		runInst.appendOutput("starting test task\r\n");
+		await new Promise(resolve => setTimeout(resolve, 10000)).then(() => runInst.appendOutput("starting task now\r\n"));
+		runInst.appendOutput("really starting test task\r\n");
 		waitForK3s = vscode.commands.executeCommand("workbench.action.tasks.runTask", `${label}`);
-		await k3sExecPromise;
+		await waitForK3sStartup;
+		fileWatcher.dispose();
 		runInst.appendOutput("try to connect to k3s...\r\n");
 		const k3sConnect = new K3sControlItf(path.join(buildDir, 'ctrl.sock'), runInst);
+		for (var tc of tcs) {
+			k3sConnect.runTest(tc.label)
+		}
+		setTimeout(() => { }, 10000);
 		runInst.appendOutput("shutting down test task\r\n");
 		k3sConnect.shutdownK3s();
 		await waitForK3s;
