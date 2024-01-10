@@ -16,7 +16,7 @@ export interface OneTtcn3Suite {
 	ui_tcmodule: vscode.TestItem
 }
 
-interface Ttcn3SuiteType {
+export interface Ttcn3SuiteType {
 	source_dir: string
 	binary_dir: string
 	suites: TcSuite[]
