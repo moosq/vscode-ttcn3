@@ -268,16 +268,17 @@ class TestSession implements Labler {
 				allTcsExecuted = verdict.remainingReplies;
 				if (this.testMap.has(verdict.reply.test_name)) {
 					const tcInst = this.testMap.get(verdict.reply.test_name)!;
+					const timeInms = verdict.reply.time * 1000;
 					switch (verdict.reply.result) {
-						case "pass": runInst.passed(tcInst, verdict.reply.time);
+						case "pass": runInst.passed(tcInst, timeInms);
 							break;
-						case "fail": runInst.failed(tcInst, new vscode.TestMessage(""), verdict.reply.time);
+						case "fail": runInst.failed(tcInst, new vscode.TestMessage(""), timeInms);
 							break;
-						case "error": runInst.errored(tcInst, new vscode.TestMessage(""), verdict.reply.time);
+						case "error": runInst.errored(tcInst, new vscode.TestMessage(""), timeInms);
 							break;
 						case "skipped": runInst.skipped(tcInst);
 							break;
-						default: runInst.failed(tcInst, new vscode.TestMessage(verdict.reply.result), verdict.reply.time);
+						default: runInst.failed(tcInst, new vscode.TestMessage(verdict.reply.result), timeInms);
 					}
 				}
 			}
