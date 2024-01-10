@@ -26,15 +26,30 @@ type K3sCtrlRequest = {
 	instance: number
 }
 
+type K3sCtrlReply = {
+	spec_version: number,
+	test_name: string,
+	log_directory: string,
+	result: string,
+	time: number,
+	load: number,
+	errors: string[],
+	instance: number
+}
+
+type TcVerdict = {
+	remainingReplies: number,
+	reply: K3sCtrlReply
+}
 class K3sControlItf {
-	constructor(sockName: string, runInst: vscode.TestRun) {
+	constructor(sockName: string, maxNoTests: number, runInst: vscode.TestRun) {
 		this.sock = new UnixDgramSocket();
 		let retries = 10;
 		this.rInst = runInst;
 		this.sock.connect(sockName);
 		this.sock.bind(sockName);
 		this.sockPath = sockName;
-
+		this.maxNoTests = maxNoTests;
 	}
 
 	private sendWretry(message: string, retryCnt: number) {
@@ -48,6 +63,22 @@ class K3sControlItf {
 		retry();
 	}
 
+	instanciateReceiver(f: (message: Buffer, info: any) => void) {
+		this.sock.on('message', f);
+	}
+
+	decrementCounter(): Promise<TcVerdict> {
+		this.rInst.appendOutput(`decrementCounter: create a promise\r\n`);
+		return new Promise((resolve) => {
+			this.sock.once('message', (message: Buffer, info: any) => {
+				this.maxNoTests--;
+				this.rInst.appendOutput(`Data received on socket. Still running tests:  ${this.maxNoTests}\r\n`);
+				this.rInst.appendOutput(`received from k3s: ${message.toString(UnixDgramSocket.payloadEncoding)}\r\n`);
+				const retVal: K3sCtrlReply = JSON.parse(message.toString())
+				resolve({ remainingReplies: this.maxNoTests, reply: retVal });
+			});
+		});
+	}
 	shutdownK3s() {
 		const payload: K3sCtrlCmd = { version: 1, command: "shutdown" }
 		this.rInst.appendOutput("executing shutdownK3s\r\n");
@@ -56,12 +87,13 @@ class K3sControlItf {
 		this.sock.close();
 	}
 
-	runTest(tcName: string) {
-		const payload: K3sCtrlRequest = { version: 1, test_name: tcName, instance: 1 };
+	runTest(tcInst: string) {
+		const payload: K3sCtrlRequest = { version: 1, test_name: tcInst, instance: 1 };
 		this.rInst.appendOutput(`about to send over ctrl.sock: ${JSON.stringify(payload)}\r\n`);
 		this.sendWretry(`${JSON.stringify(payload)}\n`, 10)
 	}
 	sockPath: string;
+	maxNoTests: number;
 	sock: UnixDgramSocket;
 	rInst: vscode.TestRun;
 }
@@ -157,6 +189,7 @@ class TestFile implements Labler {
 	}
 }
 
+type TcMapType = Map<string, vscode.TestItem>;
 class TestSession implements Labler {
 	constructor(
 		private readonly name: string,
@@ -164,6 +197,7 @@ class TestSession implements Labler {
 		private readonly target: string,
 		//private runInst: vscode.TestRun
 	) {
+		this.testMap = new Map<string, vscode.TestItem>();
 		this.testList = [];
 	}
 
@@ -173,28 +207,93 @@ class TestSession implements Labler {
 
 	addTest(item: vscode.TestItem) {
 		this.testList.push(item);
+		if (!this.testMap.has(item.label)) {
+			this.testMap.set(item.label, item);
+		}
 	}
 	async run(runInst: vscode.TestRun): Promise<void> {
-		const start = Date.now();
-
-		await executeTest(runInst, '/home/ut/bin/mycmake', this.buildDir, this.target, this.testList);
-		const exitVal = this.execute();
-		const duration = Date.now() - start;
-		this.testList.forEach(v => {
-			runInst.appendOutput(`finished execution of ${v.id}\r\n`);
-			runInst.passed(v, duration); // TODO: for the moment it shall always pass
-		})
-		/*	const message = vscode.TestMessage.diff(`Expected ${item.label}`, String(this.expected), String(actual));
-			message.location = new vscode.Location(item.uri!, item.range!);
-			options.failed(item, message, duration);*/
-
+		await this.executeTest(runInst, '/home/ut/bin/mycmake');
 	}
 
 	private execute() {
 		return 0
 	}
 
+	private async executeTest(runInst: vscode.TestRun, exe: string): Promise<void> {
+		let waitForK3s: Thenable<unknown>;
+		let filt: vscode.TaskFilter = { type: "exec_ttcn3" };
+		let label: string = "";
+		await vscode.tasks.fetchTasks(filt).then((cmdList: vscode.Task[]) => {
+			cmdList.forEach((task: vscode.Task) => {
+				runInst.appendOutput(`available tasks: ${task.name} from group. ${task.group?.id}, with type: ${task.definition.type}, source: ${task.source}, supplied target: ${this.target}, buildDir: ${this.buildDir}\r\n`);
+				if (task.name == this.target) {
+					if (task.definition.type == "exec_ttcn3") {
+						label = `exec_ttcn3: ${this.target}`;
+					}
+				}
+			})
+		});
+		if (label !== "") {
+			// NOTE: executeCommand is superior to scode.tasks.executeTask. It takes into account configurations from
+			// tasks.json whereas the latter one supplied only config from taskProvider (at least in my case)
+			const ctrlSock = path.join(this.buildDir, 'ctrl.sock');
+
+			// delete old ctrl.sock file
+			if (fs.existsSync(ctrlSock)) {
+				runInst.appendOutput(`${ctrlSock} already existing, deleting it...\r\n`);
+				fs.unlinkSync(ctrlSock);
+			}
+			// watch for ctrl.sock to come alive
+			const fileWatcher = vscode.workspace.createFileSystemWatcher(ctrlSock);
+
+			const waitForK3sStartup = new Promise(resolve => fileWatcher.onDidCreate(resolve));
+			runInst.appendOutput("starting test task\r\n");
+			await new Promise(resolve => setTimeout(resolve, 5000)).then(() => runInst.appendOutput("starting task now\r\n"));
+			runInst.appendOutput("really starting test task\r\n");
+			waitForK3s = vscode.commands.executeCommand("workbench.action.tasks.runTask", `${label}`);
+			await waitForK3sStartup.then(() => runInst.appendOutput("detected ctrl.sock\r\n"), (reason) => runInst.appendOutput(`rejected ctrl.sock: ${reason} \r\n`))
+				.catch((error) => { runInst.appendOutput(`detected error on ctrl.sock: ${error}\r\n`) });
+			fileWatcher.dispose();
+			runInst.appendOutput("try to connect to k3s...\r\n");
+			const k3sConnect = new K3sControlItf(path.join(this.buildDir, 'ctrl.sock'), this.testList.length, runInst);
+
+			let allTcsExecuted: number = this.testList.length;
+
+			for (var tc of this.testList) {
+				k3sConnect.runTest(tc.label)
+			}
+			while (allTcsExecuted > 0) {
+				runInst.appendOutput("waiting for tcs to complete...\r\n");
+				const verdict = await k3sConnect.decrementCounter();
+				allTcsExecuted = verdict.remainingReplies;
+				if (this.testMap.has(verdict.reply.test_name)) {
+					const tcInst = this.testMap.get(verdict.reply.test_name)!;
+					switch (verdict.reply.result) {
+						case "pass": runInst.passed(tcInst, verdict.reply.time);
+							break;
+						case "fail": runInst.failed(tcInst, new vscode.TestMessage(""), verdict.reply.time);
+							break;
+						case "error": runInst.errored(tcInst, new vscode.TestMessage(""), verdict.reply.time);
+							break;
+						case "skipped": runInst.skipped(tcInst);
+							break;
+						default: runInst.failed(tcInst, new vscode.TestMessage(verdict.reply.result), verdict.reply.time);
+					}
+				}
+			}
+
+			runInst.appendOutput("shutting down test task\r\n");
+			k3sConnect.shutdownK3s();
+			await waitForK3s;
+		}
+		runInst.appendOutput("Finished execution of my own task\r\n");
+
+		return new Promise<void>((resolve) => {
+			resolve();
+		})
+	}
 	private testList: vscode.TestItem[];
+	private testMap: TcMapType;
 }
 
 function getBinaryDir(outCh: vscode.OutputChannel, tc: vscode.TestItem): string {
@@ -285,121 +384,3 @@ export function startTestRun(request: vscode.TestRunRequest, testCtrl: vscode.Te
 	discoverTests(request.include ?? gatherTestItems(testCtrl.items)).then(runTestQueue);
 };
 
-async function executeTest(runInst: vscode.TestRun, exe: string, buildDir: string, target: string, tcs: vscode.TestItem[]): Promise<void> {
-	let testsRegex = "";
-	const envForTest = process;
-	tcs.forEach((tc, idx) => {
-		if (idx > 0) {
-			testsRegex += '|';
-		}
-		testsRegex += tc.label;
-	})
-	envForTest.env['SCT_TEST_PATTERNS'] = `"^(${testsRegex})$"`;
-	let waitForK3s: Thenable<unknown>;
-	let filt: vscode.TaskFilter = { type: "exec_ttcn3" };
-	let label: string = "";
-	await vscode.tasks.fetchTasks(filt).then((cmdList: vscode.Task[]) => {
-		cmdList.forEach((task: vscode.Task) => {
-			runInst.appendOutput(`available tasks: ${task.name} from group. ${task.group?.id}, with type: ${task.definition.type}, source: ${task.source}, supplied target: ${target}, buildDir: ${buildDir}\r\n`);
-			if (task.name == target) {
-				if (task.definition.type == "exec_ttcn3") {
-					label = `exec_ttcn3: ${target}`;
-				}
-			}
-		})
-	});
-	if (label !== "") {
-		// NOTE: executeCommand is superior to scode.tasks.executeTask. It takes into account configurations from
-		// tasks.json whereas the latter one supplied only config from taskProvider (at least in my case)
-		const ctrlSock = path.join(buildDir, 'ctrl.sock');
-
-		// delete old ctrl.sock file
-		if (fs.existsSync(ctrlSock)) {
-			runInst.appendOutput(`${ctrlSock} already existing, deleting it...\r\n`);
-			fs.unlinkSync(ctrlSock);
-		}
-		// watch for ctrl.sock to come alive
-		const fileWatcher = vscode.workspace.createFileSystemWatcher(ctrlSock);
-		/*const k3sExecPromise= new Promise<boolean>  => {
-			runInst.appendOutput(`install fileWatcher for ${ctrlSock}\r\n`);
-			fileWatcher.onDidCreate(() => {
-				runInst.appendOutput(`${ctrlSock} creation detected\r\n`);
-				return true;
-			});
-			fileWatcher.onDidChange(() => {
-				runInst.appendOutput(`${ctrlSock} change detected\r\n`);
-				return (true);
-			});
-			if (fs.existsSync(ctrlSock)) {
-				runInst.appendOutput(`${ctrlSock} already existing\r\n`);
-				return (true);
-			}
-		});*/
-		const waitForK3sStartup = new Promise(resolve => fileWatcher.onDidCreate(resolve));
-		runInst.appendOutput("starting test task\r\n");
-		await new Promise(resolve => setTimeout(resolve, 10000)).then(() => runInst.appendOutput("starting task now\r\n"));
-		runInst.appendOutput("really starting test task\r\n");
-		waitForK3s = vscode.commands.executeCommand("workbench.action.tasks.runTask", `${label}`);
-		await waitForK3sStartup;
-		fileWatcher.dispose();
-		runInst.appendOutput("try to connect to k3s...\r\n");
-		const k3sConnect = new K3sControlItf(path.join(buildDir, 'ctrl.sock'), runInst);
-		for (var tc of tcs) {
-			k3sConnect.runTest(tc.label)
-		}
-		setTimeout(() => { }, 10000);
-		runInst.appendOutput("shutting down test task\r\n");
-		k3sConnect.shutdownK3s();
-		await waitForK3s;
-	}
-	runInst.appendOutput("Finished execution of my own task\r\n");
-	/*const child = child_process.spawn(exe, ['--build', buildDir, '--target', target], { env: process.env });
-	runInst.appendOutput(`about to execute ${exe} --build ${buildDir} --target ${target}\r\n`);
-	child.on("error", (err: Error) => {
-		stderrBuf = stderrBuf.concat(`Execution of ${exe} finished with: ${err}\r\n`);
-	})
-	let stdoutBuf = "";
-	let stderrBuf = "";
-	child.stdout.setEncoding('utf8'); // for text chunks
-	child.stderr.setEncoding('utf8'); // for text chunks
-	child.stdout.on('data', (chunk: string) => {
-		// data from standard output is here as buffers
-		chunk = chunk.replace(/\n/g, '\r\n');
-		stdoutBuf = stdoutBuf.concat(chunk);
-		runInst.appendOutput(chunk);
-	});
-
-	child.stderr.on('data', (chunk: string) => {
-		// data from standard error is here as buffers
-		chunk = chunk.replace(/\n/g, '\r\n');
-		stderrBuf = stderrBuf.concat(chunk);
-	});
-
-	const exitCode = new Promise<number>((resolve, reject) => {
-		child.on('close', (code, signal: NodeJS.Signals) => {
-			if (code == 0 && signal == null) {
-				runInst.appendOutput(`on closing pipe: code=${code}. Calling resolve passing ${stdoutBuf.length} bytes\r\n`);
-				resolve(code);
-			}
-			else {
-				runInst.appendOutput(`on closing pipe: code=${code}, signal=${signal}. Calling reject passing\r\n${stderrBuf}\r\n`)
-				reject(code);
-			}
-		});
-	});
-
-	// attention: without await we are not stopping here!
-	await exitCode.then((val: number) => {
-		if (stderrBuf.length > 0) {
-			//stderrBuf = stderrBuf.replace('\n', '\r\n');
-			runInst.appendOutput(`stderr of ${exe}:\r\n${stderrBuf}\r\n`);
-		}
-	}, (val: number) => {
-		runInst.appendOutput(`exec promise rejected: ${val}\r\n`);
-		runInst.appendOutput(`retrieving test verdicts\r\n`);
-	});
-	runInst.appendOutput(`tests exit with stderr:\r\n${stderrBuf}\r\n`);*/
-	return new Promise<void>((resolve) => {
-		resolve();
-	})
-}
