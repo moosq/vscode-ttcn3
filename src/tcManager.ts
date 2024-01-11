@@ -236,7 +236,7 @@ class TestSession implements Labler {
 		if (label !== "") {
 			// NOTE: executeCommand is superior to scode.tasks.executeTask. It takes into account configurations from
 			// tasks.json whereas the latter one supplied only config from taskProvider (at least in my case)
-			const ctrlSock = path.join(this.buildDir, 'ctrl.sock');
+			const ctrlSock = path.join(this.buildDir, `${this.target}.ctrl.sock`);
 
 			// delete old ctrl.sock file
 			if (fs.existsSync(ctrlSock)) {
@@ -255,7 +255,7 @@ class TestSession implements Labler {
 				.catch((error) => { runInst.appendOutput(`detected error on ctrl.sock: ${error}\r\n`) });
 			fileWatcher.dispose();
 			runInst.appendOutput("try to connect to k3s...\r\n");
-			const k3sConnect = new K3sControlItf(path.join(this.buildDir, 'ctrl.sock'), this.testList.length, runInst);
+			const k3sConnect = new K3sControlItf(ctrlSock, this.testList.length, runInst);
 
 			let allTcsExecuted: number = this.testList.length;
 
