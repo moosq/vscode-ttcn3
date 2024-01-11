@@ -212,14 +212,14 @@ class TestSession implements Labler {
 		}
 	}
 	async run(runInst: vscode.TestRun): Promise<void> {
-		await this.executeTest(runInst, '/home/ut/bin/mycmake');
+		return this.executeTest(runInst);
 	}
 
 	private execute() {
 		return 0
 	}
 
-	private async executeTest(runInst: vscode.TestRun, exe: string): Promise<void> {
+	private async executeTest(runInst: vscode.TestRun): Promise<void> {
 		let waitForK3s: Thenable<unknown>;
 		let filt: vscode.TaskFilter = { type: "exec_ttcn3" };
 		let label: string = "";
@@ -243,17 +243,19 @@ class TestSession implements Labler {
 				runInst.appendOutput(`${ctrlSock} already existing, deleting it...\r\n`);
 				fs.unlinkSync(ctrlSock);
 			}
-			// watch for ctrl.sock to come alive
+			// watch for *.ctrl.sock to come alive
 			const fileWatcher = vscode.workspace.createFileSystemWatcher(ctrlSock);
 
 			const waitForK3sStartup = new Promise(resolve => fileWatcher.onDidCreate(resolve));
 			runInst.appendOutput("starting test task\r\n");
-			await new Promise(resolve => setTimeout(resolve, 5000)).then(() => runInst.appendOutput("starting task now\r\n"));
-			runInst.appendOutput("really starting test task\r\n");
+
+			// execute the testcase task
 			waitForK3s = vscode.commands.executeCommand("workbench.action.tasks.runTask", `${label}`);
+			// wait for the creation of the communication socket
 			await waitForK3sStartup.then(() => runInst.appendOutput("detected ctrl.sock\r\n"), (reason) => runInst.appendOutput(`rejected ctrl.sock: ${reason} \r\n`))
 				.catch((error) => { runInst.appendOutput(`detected error on ctrl.sock: ${error}\r\n`) });
 			fileWatcher.dispose();
+
 			runInst.appendOutput("try to connect to k3s...\r\n");
 			const k3sConnect = new K3sControlItf(ctrlSock, this.testList.length, runInst);
 
@@ -285,6 +287,7 @@ class TestSession implements Labler {
 
 			runInst.appendOutput("shutting down test task\r\n");
 			k3sConnect.shutdownK3s();
+			// wait for the task to exit
 			await waitForK3s;
 		}
 		runInst.appendOutput("Finished execution of my own task\r\n");
@@ -374,11 +377,13 @@ export function startTestRun(request: vscode.TestRunRequest, testCtrl: vscode.Te
 		}
 	};
 
+	let testSessionFinished: Promise<void>[] = [];
 	const runTestQueue = async () => {
 		for (const testSession of testSessions) {
-			await testSession[1].run(run);
+			testSessionFinished.push(testSession[1].run(run));
 		};
-		run.appendOutput(`Completed session ${request.profile!.label}`);
+		await Promise.all(testSessionFinished);
+		run.appendOutput(`Completed session(s) ${request.profile!.label}`);
 		run.end();
 	};
 
