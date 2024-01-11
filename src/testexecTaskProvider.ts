@@ -60,7 +60,7 @@ export class TestExecTaskProvider implements vscode.TaskProvider {
 				const taskName = s.target; // NOTE: we might find a better name for this
 				const myEnv = {
 					'NTT_CACHE': "",
-					'PYTHON_USERBASE': "",
+					'PYTHONUSERBASE': "",
 					'PATH': process.env['PATH'] ? process.env['PATH'] : ""
 				};
 				const kind: TestExecTaskDefinition = {
