@@ -10,10 +10,32 @@ export interface Ttcn3Test {
 	tags: string[]
 }
 
+export function buildTagsList(rawTags: string[]): string[] {
+	let newTags: string[] = [];
+	rawTags.forEach((rawTag: string) => {
+		const colonIdx = rawTag.indexOf(':');
+
+		let tagName = rawTag;
+		if (colonIdx != -1) {
+			rawTag.substring(0, colonIdx + 1);
+			const tagValue = rawTag.substring(colonIdx + 1);
+			const multiValues = tagValue.split(',');
+
+			multiValues.forEach((v: string) => {
+				v = v.trimStart();
+				newTags.push(tagName.concat(v));
+			});
+		}
+		else {
+			newTags.push(rawTag);
+		}
+	});
+	return newTags;
+}
 export async function getTestcaseList(runInst: OutputChannel, exe: string, pathToYml: string): Promise<Ttcn3Test[]> {
 	let tcList: Ttcn3Test[] = [];
-	const child = child_process.spawn(exe, ['list', pathToYml, '--json']);
-	runInst.appendLine(`about to execute ${exe} list ${pathToYml} --json`);
+	const child = child_process.spawn(exe, ['list', pathToYml, '--with-tags', '--json']);
+	runInst.appendLine(`about to execute ${exe} list ${pathToYml} --with-tags --json`);
 	child.on("error", (err: Error) => {
 		stderrBuf = stderrBuf.concat(`Execution of ${exe} finished with: ${err}`);
 	})
