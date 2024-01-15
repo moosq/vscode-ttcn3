@@ -17,7 +17,7 @@ export function buildTagsList(rawTags: string[]): string[] {
 
 		let tagName = rawTag;
 		if (colonIdx != -1) {
-			rawTag.substring(0, colonIdx + 1);
+			tagName = rawTag.substring(0, colonIdx + 1);
 			const tagValue = rawTag.substring(colonIdx + 1);
 			const multiValues = tagValue.split(',');
 
