@@ -16,6 +16,8 @@ import { fsExists } from './util/fsUtils';
 import { Suite } from 'mocha';
 import { profile } from 'console';
 import { TestExecTaskProvider } from './testexecTaskProvider';
+import { resolve } from 'dns';
+import { isUndefined } from 'util';
 
 let client: LanguageClient;
 let outputChannel: OutputChannel;
@@ -84,7 +86,7 @@ export async function activate(context: ExtensionContext) {
 		))*/
 	}
 
-	testCtrl.createRunProfile('Run Tests', vscode.TestRunProfileKind.Run, runHandler, true, undefined);
+	testCtrl.createRunProfile('Run Tests', vscode.TestRunProfileKind.Run, runHandler, true,); // new vscode.TestTag("@feature:5GC000300-C-c1")
 	context.subscriptions.push(testCtrl);
 	const initTasks: Promise<void>[] = [];
 
@@ -97,21 +99,34 @@ export async function activate(context: ExtensionContext) {
 	const tcSuiteCreator = new TcSuiteCreator();
 	let suites: ttcn3_suites.Ttcn3SuiteType[] = [];
 	let tcListsReady: Promise<void>[] = [];
+	outputChannel.append(`Detected ${from_ttcn3_suites.size} suites in workspace.\n`);
 	from_ttcn3_suites.forEach(function (v: string, k: string) {
+		let content: ttcn3_suites.Ttcn3SuiteType
 		outputChannel.append(`Detected a suite in workspace: ${v}\n`);
 		const ws = testCtrl.createTestItem(k, k, undefined);
-		const content = ttcn3_suites.readTtcn3Suite(v);
-
+		if (v.length > 0) {
+			content = ttcn3_suites.readTtcn3Suite(v);
+		} else {
+			content = { binary_dir: k, source_dir: k, suites: [{ root_dir: k, source_dir: k, target: "" }] };
+		}
 		testCtrl.items.add(ws);
 		outputChannel.appendLine(`content of ws ${JSON.stringify(content)}\n`);
 		content.suites.forEach(function (v: ttcn3_suites.TcSuite, idx: number, list: ttcn3_suites.TcSuite[]) {
-			const sct = testCtrl.createTestItem(v.target, v.target, undefined);
-			const suite = new tcm.TestSuiteData(v.target, content.binary_dir);
-			tcm.testData.set(sct, suite);
-			sct.canResolveChildren = true;
-			ws.children.add(sct);
-			ws.canResolveChildren = true;
-			tcListsReady.push(ntt.getTestcaseList(outputChannel, '/sdk/prefix_root_NATIVE-gcc/usr/bin/ntt', v.root_dir).then(function (list: ntt.Ttcn3Test[]) {
+			let sct = ws
+			if (v.target.length == 0) {
+				v.target = path.basename(k);
+				const suite = new tcm.TestSuiteData(v.target, content.binary_dir);
+				tcm.testData.set(sct, suite);
+			} else {
+				sct = testCtrl.createTestItem(v.target, v.target, undefined);
+				const suite = new tcm.TestSuiteData(v.target, content.binary_dir);
+				tcm.testData.set(sct, suite);
+				sct.canResolveChildren = true;
+				ws.children.add(sct);
+				ws.canResolveChildren = true;
+			}
+
+			tcListsReady.push(ntt.getTestcaseList(outputChannel, '/home/ut/bin/ntt', v.root_dir).then(function (list: ntt.Ttcn3Test[]) {
 				outputChannel.appendLine(`Detected ${list.length} tests from ${v.target}`);
 				const file2Tests = new Map<string, ntt.Ttcn3Test[]>();
 				let mod: vscode.TestItem;
@@ -126,17 +141,24 @@ export async function activate(context: ExtensionContext) {
 						tcm.testData.set(mod, moduleData);
 
 						file2Tests.set(vtc.filename, [vtc]);
-						outputChannel.appendLine(`adding content to globFileToTcSuite: ${vtc.filename}=${JSON.stringify(v)}`);
 						globFileToTcSuite.set(vtc.filename, { source_dir: v.source_dir, root_dir: v.root_dir, binary_dir: content.binary_dir, target: v.target, ui_tcmodule: mod });
 						outputChannel.appendLine(`adding content to globFileToTcSuite size=${globFileToTcSuite.size}`);
 					}
 					const tcUri = vscode.Uri.file(vtc.filename)
 					const tc = testCtrl.createTestItem(vtc.id.concat(vtc.filename), vtc.id, tcUri.with({ fragment: String(vtc.line) }));
+					let tcTags: vscode.TestTag[] = [];
+					if (vtc.tags !== undefined) {
+						ntt.buildTagsList(vtc.tags).forEach(function (tagId: string) {
+							tcTags.push(new vscode.TestTag(tagId));
+						});
+						tc.tags = tcTags;
+					}
+					outputChannel.appendLine(`tags for ${vtc.id}: ${JSON.stringify(tc.tags)}`);
 					mod.children.add(tc);
 				});
 			}));
 		});
-		outputChannel.appendLine(`suites ${v} has been completed. Size of globFileToTcSuite ${globFileToTcSuite.size}`);
+		outputChannel.appendLine(`1. suites ${v} has been completed. Size of globFileToTcSuite ${globFileToTcSuite.size}`);
 		suites = suites.concat(content);
 	})
 	await Promise.all(tcListsReady);
@@ -145,7 +167,7 @@ export async function activate(context: ExtensionContext) {
 	outputChannel.appendLine(`all suites have been completed. size of ${globFileToTcSuite.size}`);
 	context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(
 		(e: vscode.TextEditor | undefined) => {
-			outputChannel.appendLine(`filename of the newly selected window: ${e?.document.fileName},${e}`);
+			outputChannel.appendLine(`filename of the newly selected window: ${e?.document.fileName},${JSON.stringify(e)}`);
 			const isTtcn3File = ((e !== undefined) && (e.document.fileName.endsWith('.ttcn3')));
 			const name = (isTtcn3File) ? e.document.fileName : "no ttcn-3 file";
 			generateTcListForCurrFile(testCtrl, globFileToTcSuite, name, isTtcn3File);
@@ -162,12 +184,14 @@ export async function activate(context: ExtensionContext) {
 	generateTcListForCurrFile(testCtrl, globFileToTcSuite, name, isTtcn3File);
 }
 
-function generateTcListForCurrFile(testCtrl: vscode.TestController, globFileToTcSuite: Map<string, ttcn3_suites.OneTtcn3Suite>, name: string, isTtcn3File: boolean) {
+async function generateTcListForCurrFile(testCtrl: vscode.TestController, globFileToTcSuite: Map<string, ttcn3_suites.OneTtcn3Suite>, name: string, isTtcn3File: boolean) {
 	{
 		const currFile = testCtrl.createTestItem("active file", "active file", undefined);
 		currFile.canResolveChildren = false;
 		if (isTtcn3File) {
-			ntt.getTestcaseList(outputChannel, '/sdk/prefix_root_NATIVE-gcc/usr/bin/ntt', name).then((list: ntt.Ttcn3Test[]) => {
+			outputChannel.appendLine(`generateTcListForCurrFile: file: ${name}, globFileToTcSuite: length=${globFileToTcSuite.size}, ${JSON.stringify(globFileToTcSuite)}`);
+
+			await ntt.getTestcaseList(outputChannel, '/home/ut/bin/ntt', name).then((list: ntt.Ttcn3Test[],) => {
 				const file2Tests = new Map<string, ntt.Ttcn3Test[]>();
 				list.forEach((vtc: ntt.Ttcn3Test, idx: number, a: ntt.Ttcn3Test[]) => {
 					if (file2Tests.has(vtc.filename)) {
@@ -176,7 +200,9 @@ function generateTcListForCurrFile(testCtrl: vscode.TestController, globFileToTc
 						file2Tests.set(vtc.filename, [vtc]);
 					}
 				});
+				outputChannel.appendLine(`generateTcListForCurrFile: file2Tests: length=${file2Tests.size}, ${JSON.stringify(file2Tests)}`);
 				file2Tests.forEach((v, k) => {
+					outputChannel.appendLine(`generateTcListForCurrFile: file2Tests: [${k}]=${JSON.stringify(v)}`);
 					let sData: tcm.TestSuiteData;
 					currFile.canResolveChildren = true;
 					const mod = testCtrl.createTestItem(k, k, undefined);
@@ -184,12 +210,12 @@ function generateTcListForCurrFile(testCtrl: vscode.TestController, globFileToTc
 					const moduleData = new tcm.ModuleData(k);
 					if (globFileToTcSuite.has(k)) {
 						const isPartOfSuite = globFileToTcSuite.get(k)!;
-						outputChannel.appendLine(`the parent of  key: ${k}= ${isPartOfSuite.ui_tcmodule.parent} with size ${isPartOfSuite.ui_tcmodule.parent?.children.size} children`);
+						outputChannel.appendLine(`generateTcListForCurrFile: the parent of key: ${k}= ${isPartOfSuite.ui_tcmodule.parent} with size ${isPartOfSuite.ui_tcmodule.parent?.children.size} children. isPartOfSuite: ${JSON.stringify(isPartOfSuite)}`);
 						tcm.testData.delete(isPartOfSuite.ui_tcmodule);
 						isPartOfSuite.ui_tcmodule.parent?.children.add(mod); // exchange the module branch inside the tc suite
 						isPartOfSuite.ui_tcmodule = mod;
 						globFileToTcSuite.set(k, isPartOfSuite);
-						outputChannel.appendLine(`isPartOfSuite: ${JSON.stringify(isPartOfSuite.root_dir)} for key: ${k}`);
+						outputChannel.appendLine(`generateTcListForCurrFile: isPartOfSuite: ${JSON.stringify(isPartOfSuite.root_dir)} for key: ${k}`);
 						sData = new tcm.TestSuiteData(isPartOfSuite.target, isPartOfSuite.binary_dir);
 					} else {
 						sData = new tcm.TestSuiteData("", "");
@@ -202,6 +228,19 @@ function generateTcListForCurrFile(testCtrl: vscode.TestController, globFileToTc
 						const tcUri = vscode.Uri.file(k);
 						const tc = testCtrl.createTestItem(tcName.id.concat(k), tcName.id, tcUri.with({ fragment: String(tcName.line) }));
 						const tc_active = testCtrl.createTestItem(tcName.id.concat(k), tcName.id, tcUri.with({ fragment: String(tcName.line) }));
+						let tcTags: vscode.TestTag[] = [];
+						if (tcName.tags !== undefined) {
+							ntt.buildTagsList(tcName.tags).forEach((tagId: string) => {
+								tcTags.push(new vscode.TestTag(tagId));
+							});
+							tc.tags = tcTags;
+							tcTags.length = 0;
+							ntt.buildTagsList(tcName.tags).forEach((tagId: string) => {
+								tcTags.push(new vscode.TestTag(tagId));
+							});
+							tc_active.tags = tcTags;
+						}
+
 						mod.children.add(tc);
 						mod_active.children.add(tc_active);
 					});

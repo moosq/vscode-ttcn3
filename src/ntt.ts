@@ -7,7 +7,7 @@ export interface Ttcn3Test {
 	line: number
 	column: number
 	id: string
-	tags: string[]
+	tags?: string[]
 }
 
 export function buildTagsList(rawTags: string[]): string[] {
