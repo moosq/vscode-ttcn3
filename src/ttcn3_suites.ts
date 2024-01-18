@@ -38,6 +38,8 @@ export function findTtcn3Suite(ws: readonly vscode.WorkspaceFolder[] | undefined
 			const file = path.join(element.uri.fsPath, 'build', 'ttcn3_suites.json');
 			if (fs.existsSync(file)) {
 				ws2suite.set(element.uri.fsPath, file);
+			} else {
+				ws2suite.set(element.uri.fsPath, "");
 			}
 		}
 	});
