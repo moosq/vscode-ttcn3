@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as child_process from "child_process";
 import * as vscode from 'vscode'
+import * as tp from './testexecTaskProvider';
 import { UnixDgramSocket } from "unix-dgram-socket";
 import { toJSONObject } from "vscode-languageclient/lib/common/configuration";
 import { openStdin } from 'process';
@@ -221,14 +222,14 @@ class TestSession implements Labler {
 
 	private async executeTest(runInst: vscode.TestRun): Promise<void> {
 		let waitForK3s: Thenable<unknown>;
-		let filt: vscode.TaskFilter = { type: "exec_ttcn3" };
+		let filt: vscode.TaskFilter = { type: tp.TestExecTaskProvider.TestExecType };
 		let label: string = "";
 		await vscode.tasks.fetchTasks(filt).then((cmdList: vscode.Task[]) => {
 			cmdList.forEach((task: vscode.Task) => {
 				runInst.appendOutput(`available tasks: ${task.name} from group. ${task.group?.id}, with type: ${task.definition.type}, source: ${task.source}, supplied target: ${this.target}, buildDir: ${this.buildDir}\r\n`);
 				if (task.name == this.target) {
-					if (task.definition.type == "exec_ttcn3") {
-						label = `exec_ttcn3: ${this.target}`;
+					if (task.definition.type == tp.TestExecTaskProvider.TestExecType) {
+						label = `${tp.TestExecTaskProvider.TestExecType}: ${this.target}`;
 					}
 				}
 			})
@@ -237,7 +238,7 @@ class TestSession implements Labler {
 			// NOTE: executeCommand is superior to scode.tasks.executeTask. It takes into account configurations from
 			// tasks.json whereas the latter one supplied only config from taskProvider (at least in my case)
 			const ctrlSock = path.join(this.buildDir, `${this.target}.ctrl.sock`);
-
+			runInst.appendOutput(`the control socket is located inside: ${ctrlSock}\r\n`);
 			// delete old ctrl.sock file
 			if (fs.existsSync(ctrlSock)) {
 				runInst.appendOutput(`${ctrlSock} already existing, deleting it...\r\n`);
