@@ -122,6 +122,35 @@
 						"verbose"
 					],
 					"default": "off"
+				},
+				"ttcn3.test.tags": {
+					"title": "testcase tags and their separators",
+					"type": "array",
+					"items": {
+						"type": "object",
+						"properties": {
+							"tagName": {
+								"description": "tag name: string with the format `@[A-Za-z0-9_]+`",
+								"type": "string",
+								"format": "@[A-Za-z0-9_]+",
+								"examples": [
+									"@feature",
+									"@author",
+									"@requirement"
+								]
+							},
+							"tagSeparators": {
+								"description": "string containing all possible separation characters (e.g. `\" :/\"`",
+								"type": "string",
+								"examples": [
+									" ,",
+									" /,"
+								]
+							}
+						}
+					},
+					"default": [],
+					"description": "tags attached to testcases whose values are separated with specific characters. All other tag values are treated as free text"
 				}
 			}
 		},

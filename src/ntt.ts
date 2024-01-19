@@ -28,8 +28,26 @@ export function getNttExeFromToolsPath(conf: WorkspaceConfiguration): string {
 	return 'ntt'
 }
 
-export function buildTagsList(rawTags: string[]): string[] {
+interface TcTagsSeparator {
+	tagName: string,
+	tagSeparators: string
+}
+
+function splitterRegexFromConf(tagName: string, conf: WorkspaceConfiguration): RegExp | null {
+	const tagsSettings: TcTagsSeparator[] | undefined = conf.get('test.tags');
+	if ((tagsSettings !== null) || (tagsSettings !== undefined)) {
+		for (const tv of tagsSettings!) {
+			if (tagName === (tv.tagName + ':')) {
+				return RegExp('[' + tv.tagSeparators + ']');
+			}
+		}
+	}
+	return null;
+}
+
+export function buildTagsList(conf: WorkspaceConfiguration, rawTags: string[]): string[] {
 	let newTags: string[] = [];
+
 	rawTags.forEach((rawTag: string) => {
 		const colonIdx = rawTag.indexOf(':');
 
@@ -37,12 +55,20 @@ export function buildTagsList(rawTags: string[]): string[] {
 		if (colonIdx != -1) {
 			tagName = rawTag.substring(0, colonIdx + 1);
 			const tagValue = rawTag.substring(colonIdx + 1);
-			const multiValues = tagValue.split(',');
+			const splitter = splitterRegexFromConf(tagName, conf);
+			if (splitter != null) {
+				const multiValues = tagValue.split(splitter);
 
-			multiValues.forEach((v: string) => {
-				v = v.trimStart();
-				newTags.push(tagName.concat(v));
-			});
+				multiValues.forEach((v: string) => {
+					v = v.trimStart();
+					v = v.trimEnd();
+					if (v.length > 0) {
+						newTags.push(tagName.concat(v));
+					}
+				});
+			} else {
+				newTags.push(tagName.concat(tagValue))
+			}
 		}
 		else {
 			newTags.push(rawTag);

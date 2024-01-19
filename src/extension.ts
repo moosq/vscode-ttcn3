@@ -148,7 +148,7 @@ export async function activate(context: ExtensionContext) {
 					const tc = testCtrl.createTestItem(vtc.id.concat(vtc.filename), vtc.id, tcUri.with({ fragment: String(vtc.line) }));
 					let tcTags: vscode.TestTag[] = [];
 					if (vtc.tags !== undefined) {
-						ntt.buildTagsList(vtc.tags).forEach(function (tagId: string) {
+						ntt.buildTagsList(conf, vtc.tags).forEach(function (tagId: string) {
 							tcTags.push(new vscode.TestTag(tagId));
 						});
 						tc.tags = tcTags;
@@ -230,12 +230,12 @@ async function generateTcListForCurrFile(testCtrl: vscode.TestController, conf: 
 						const tc_active = testCtrl.createTestItem(tcName.id.concat(k), tcName.id, tcUri.with({ fragment: String(tcName.line) }));
 						let tcTags: vscode.TestTag[] = [];
 						if (tcName.tags !== undefined) {
-							ntt.buildTagsList(tcName.tags).forEach((tagId: string) => {
+							ntt.buildTagsList(conf, tcName.tags).forEach((tagId: string) => {
 								tcTags.push(new vscode.TestTag(tagId));
 							});
 							tc.tags = tcTags;
 							tcTags.length = 0;
-							ntt.buildTagsList(tcName.tags).forEach((tagId: string) => {
+							ntt.buildTagsList(conf, tcName.tags).forEach((tagId: string) => {
 								tcTags.push(new vscode.TestTag(tagId));
 							});
 							tc_active.tags = tcTags;
