@@ -1,6 +1,10 @@
 import * as ttcn3_suites from "./ttcn3_suites";
 import * as child_process from "child_process";
-import { OutputChannel } from 'vscode';
+import * as fs from "fs";
+import path = require('path');
+import { OutputChannel, WorkspaceConfiguration } from 'vscode';
+import { getVSCodeDownloadUrl } from "vscode-test/out/util";
+import { fsExists } from "./util/fsUtils";
 
 export interface Ttcn3Test {
 	filename: string
@@ -8,6 +12,20 @@ export interface Ttcn3Test {
 	column: number
 	id: string
 	tags?: string[]
+}
+
+export function getNttExeFromToolsPath(conf: WorkspaceConfiguration): string {
+	let exe: string = "";
+	let toolsPath: string[] | undefined = conf.get('server.toolsPath');
+	if (toolsPath != undefined) {
+		for (const p of toolsPath) {
+			exe = path.join(p, 'ntt');
+			if (fs.existsSync(exe)) {
+				return exe;
+			}
+		}
+	}
+	return 'ntt'
 }
 
 export function buildTagsList(rawTags: string[]): string[] {

@@ -126,7 +126,7 @@ export async function activate(context: ExtensionContext) {
 				ws.canResolveChildren = true;
 			}
 
-			tcListsReady.push(ntt.getTestcaseList(outputChannel, '/home/ut/bin/ntt', v.root_dir).then(function (list: ntt.Ttcn3Test[]) {
+			tcListsReady.push(ntt.getTestcaseList(outputChannel, ntt.getNttExeFromToolsPath(conf), v.root_dir).then(function (list: ntt.Ttcn3Test[]) {
 				outputChannel.appendLine(`Detected ${list.length} tests from ${v.target}`);
 				const file2Tests = new Map<string, ntt.Ttcn3Test[]>();
 				let mod: vscode.TestItem;
@@ -170,28 +170,28 @@ export async function activate(context: ExtensionContext) {
 			outputChannel.appendLine(`filename of the newly selected window: ${e?.document.fileName},${JSON.stringify(e)}`);
 			const isTtcn3File = ((e !== undefined) && (e.document.fileName.endsWith('.ttcn3')));
 			const name = (isTtcn3File) ? e.document.fileName : "no ttcn-3 file";
-			generateTcListForCurrFile(testCtrl, globFileToTcSuite, name, isTtcn3File);
+			generateTcListForCurrFile(testCtrl, conf, globFileToTcSuite, name, isTtcn3File);
 		},));
 	context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(
 		(e: vscode.TextDocument) => {
 			// TODO: this doesn't update the tc list for the complete workspace
 			const isTtcn3File = e.fileName.endsWith('.ttcn3');
 			const name = (isTtcn3File) ? e.fileName : "no ttcn-3 file";
-			generateTcListForCurrFile(testCtrl, globFileToTcSuite, name, isTtcn3File);
+			generateTcListForCurrFile(testCtrl, conf, globFileToTcSuite, name, isTtcn3File);
 		},));
 	const isTtcn3File = ((vscode.window.activeTextEditor !== undefined) && (vscode.window.activeTextEditor.document.fileName.endsWith('.ttcn3')));
 	const name = ((vscode.window.activeTextEditor !== undefined) && isTtcn3File) ? vscode.window.activeTextEditor.document.fileName : "no ttcn-3 file";
-	generateTcListForCurrFile(testCtrl, globFileToTcSuite, name, isTtcn3File);
+	generateTcListForCurrFile(testCtrl, conf, globFileToTcSuite, name, isTtcn3File);
 }
 
-async function generateTcListForCurrFile(testCtrl: vscode.TestController, globFileToTcSuite: Map<string, ttcn3_suites.OneTtcn3Suite>, name: string, isTtcn3File: boolean) {
+async function generateTcListForCurrFile(testCtrl: vscode.TestController, conf: vscode.WorkspaceConfiguration, globFileToTcSuite: Map<string, ttcn3_suites.OneTtcn3Suite>, name: string, isTtcn3File: boolean) {
 	{
 		const currFile = testCtrl.createTestItem("active file", "active file", undefined);
 		currFile.canResolveChildren = false;
 		if (isTtcn3File) {
 			outputChannel.appendLine(`generateTcListForCurrFile: file: ${name}, globFileToTcSuite: length=${globFileToTcSuite.size}, ${JSON.stringify(globFileToTcSuite)}`);
 
-			await ntt.getTestcaseList(outputChannel, '/home/ut/bin/ntt', name).then((list: ntt.Ttcn3Test[],) => {
+			await ntt.getTestcaseList(outputChannel, ntt.getNttExeFromToolsPath(conf), name).then((list: ntt.Ttcn3Test[],) => {
 				const file2Tests = new Map<string, ntt.Ttcn3Test[]>();
 				list.forEach((vtc: ntt.Ttcn3Test, idx: number, a: ntt.Ttcn3Test[]) => {
 					if (file2Tests.has(vtc.filename)) {
