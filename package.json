@@ -146,7 +146,46 @@
 			"[ttcn3]": {
 				"editor.formatOnSave": true
 			}
-		}
+		},
+		"taskDefinitions": [
+			{
+				"type": "exec_ttcn3",
+				"required": [
+					"task"
+				],
+				"properties": {
+					"task": {
+						"type": "string",
+						"description": "template for ttcn3 testcase execution task"
+					},
+					"mycommand": {
+						"type": "string",
+						"description": "command for testcase execution"
+					},
+					"myargs": {
+						"type": "array",
+						"description": "args for command"
+					},
+					"myoptions": {
+						"type": "object",
+						"description": "options for command",
+						"$schema": "file::./schemas/tasks.schema.json",
+						"objectDefinition": {
+							"cwd": "value1",
+							"env": {}
+						}
+					}
+				}
+			}
+		],
+		"json.schemas": [
+			{
+				"fileMatch": [
+					"/.vscode/tasks.json"
+				],
+				"url": "./schemas/tasks.schema.json"
+			}
+		]
 	},
 	"scripts": {
 		"vscode:prepublish": "npx js-yaml syntaxes/ttcn3.tmLanguage.yaml > syntaxes/ttcn3.tmLanguage.json && npm run compile",
