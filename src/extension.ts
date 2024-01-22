@@ -19,6 +19,11 @@ import { TestExecTaskProvider } from './testexecTaskProvider';
 import { resolve } from 'dns';
 import { isUndefined } from 'util';
 
+const lineNoToRange = (lineNo: number) => {
+	const position = new vscode.Position(lineNo, 0)
+	return new vscode.Range(position, position)
+}
+
 let client: LanguageClient;
 let outputChannel: OutputChannel;
 
@@ -145,7 +150,8 @@ export async function activate(context: ExtensionContext) {
 						outputChannel.appendLine(`adding content to globFileToTcSuite size=${globFileToTcSuite.size}`);
 					}
 					const tcUri = vscode.Uri.file(vtc.filename)
-					const tc = testCtrl.createTestItem(vtc.id.concat(vtc.filename), vtc.id, tcUri.with({ fragment: String(vtc.line) }));
+					const tc = testCtrl.createTestItem(vtc.id.concat(vtc.filename), vtc.id, tcUri);
+					tc.range = lineNoToRange(vtc.line);
 					let tcTags: vscode.TestTag[] = [];
 					if (vtc.tags !== undefined) {
 						ntt.buildTagsList(conf, vtc.tags).forEach(function (tagId: string) {
@@ -186,8 +192,6 @@ export async function activate(context: ExtensionContext) {
 
 async function generateTcListForCurrFile(testCtrl: vscode.TestController, conf: vscode.WorkspaceConfiguration, globFileToTcSuite: Map<string, ttcn3_suites.OneTtcn3Suite>, name: string, isTtcn3File: boolean) {
 	{
-		const currFile = testCtrl.createTestItem("active file", "active file", undefined);
-		currFile.canResolveChildren = false;
 		if (isTtcn3File) {
 			outputChannel.appendLine(`generateTcListForCurrFile: file: ${name}, globFileToTcSuite: length=${globFileToTcSuite.size}, ${JSON.stringify(globFileToTcSuite)}`);
 
@@ -204,9 +208,7 @@ async function generateTcListForCurrFile(testCtrl: vscode.TestController, conf: 
 				file2Tests.forEach((v, k) => {
 					outputChannel.appendLine(`generateTcListForCurrFile: file2Tests: [${k}]=${JSON.stringify(v)}`);
 					let sData: tcm.TestSuiteData;
-					currFile.canResolveChildren = true;
 					const mod = testCtrl.createTestItem(k, k, undefined);
-					const mod_active = testCtrl.createTestItem(k, k, undefined); // a new object is needed, as sharing only one in two different branches of the test tree doesn't seem to work
 					const moduleData = new tcm.ModuleData(k);
 					if (globFileToTcSuite.has(k)) {
 						const isPartOfSuite = globFileToTcSuite.get(k)!;
@@ -221,13 +223,11 @@ async function generateTcListForCurrFile(testCtrl: vscode.TestController, conf: 
 						sData = new tcm.TestSuiteData("", "");
 					}
 					tcm.testData.set(mod, moduleData);
-					currFile.children.add(mod_active);
-					tcm.testData.set(currFile, sData);
-					vscode.Uri;
+
 					v.forEach(tcName => {
 						const tcUri = vscode.Uri.file(k);
-						const tc = testCtrl.createTestItem(tcName.id.concat(k), tcName.id, tcUri.with({ fragment: String(tcName.line) }));
-						const tc_active = testCtrl.createTestItem(tcName.id.concat(k), tcName.id, tcUri.with({ fragment: String(tcName.line) }));
+						const tc = testCtrl.createTestItem(tcName.id.concat(k), tcName.id, tcUri);
+						tc.range = lineNoToRange(tcName.line);
 						let tcTags: vscode.TestTag[] = [];
 						if (tcName.tags !== undefined) {
 							ntt.buildTagsList(conf, tcName.tags).forEach((tagId: string) => {
@@ -238,18 +238,13 @@ async function generateTcListForCurrFile(testCtrl: vscode.TestController, conf: 
 							ntt.buildTagsList(conf, tcName.tags).forEach((tagId: string) => {
 								tcTags.push(new vscode.TestTag(tagId));
 							});
-							tc_active.tags = tcTags;
 						}
 
 						mod.children.add(tc);
-						mod_active.children.add(tc_active);
 					});
 					mod.canResolveChildren = true;
 				});
 			});
-			testCtrl.items.add(currFile);
-		} else {
-			testCtrl.items.delete("current active file");
 		}
 	}
 }
