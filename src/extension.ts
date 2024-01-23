@@ -81,7 +81,7 @@ export async function activate(context: ExtensionContext) {
 	}
 	const runHandler = (request: Ttcn3TestRunReq, cancellation: vscode.CancellationToken) => {
 		if (!request.continuous) {
-			return tcm.startTestRun(request, testCtrl, outputChannel);
+			return tcm.startTestRun(request, testCtrl, cancellation, outputChannel);
 		}/*
 		return startTestRun(new Ttcn3TestRunReq(
 			[getOrCreateFile(ctrl, uri).file],
@@ -91,7 +91,7 @@ export async function activate(context: ExtensionContext) {
 		))*/
 	}
 
-	testCtrl.createRunProfile('Run Tests', vscode.TestRunProfileKind.Run, runHandler, true,); // new vscode.TestTag("@feature:5GC000300-C-c1")
+	testCtrl.createRunProfile('Run Tests', vscode.TestRunProfileKind.Run, runHandler, true); // new vscode.TestTag("@feature:5GC000300-C-c1")
 	context.subscriptions.push(testCtrl);
 	const initTasks: Promise<void>[] = [];
 
@@ -151,7 +151,7 @@ export async function activate(context: ExtensionContext) {
 					}
 					const tcUri = vscode.Uri.file(vtc.filename)
 					const tc = testCtrl.createTestItem(vtc.id.concat(vtc.filename), vtc.id, tcUri);
-					tc.range = lineNoToRange(vtc.line);
+					tc.range = lineNoToRange(vtc.line - 1);
 					let tcTags: vscode.TestTag[] = [];
 					if (vtc.tags !== undefined) {
 						ntt.buildTagsList(conf, vtc.tags).forEach(function (tagId: string) {
@@ -227,7 +227,7 @@ async function generateTcListForCurrFile(testCtrl: vscode.TestController, conf: 
 					v.forEach(tcName => {
 						const tcUri = vscode.Uri.file(k);
 						const tc = testCtrl.createTestItem(tcName.id.concat(k), tcName.id, tcUri);
-						tc.range = lineNoToRange(tcName.line);
+						tc.range = lineNoToRange(tcName.line - 1);
 						let tcTags: vscode.TestTag[] = [];
 						if (tcName.tags !== undefined) {
 							ntt.buildTagsList(conf, tcName.tags).forEach((tagId: string) => {
