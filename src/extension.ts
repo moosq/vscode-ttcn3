@@ -122,6 +122,7 @@ export async function activate(context: ExtensionContext) {
 				v.target = path.basename(k);
 				const suite = new tcm.TestSuiteData(v.target, content.binary_dir);
 				tcm.testData.set(sct, suite);
+				sct.canResolveChildren = true;
 			} else {
 				sct = testCtrl.createTestItem(v.target, v.target, undefined);
 				const suite = new tcm.TestSuiteData(v.target, content.binary_dir);
