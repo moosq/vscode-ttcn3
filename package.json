@@ -225,7 +225,7 @@
 	},
 	"dependencies": {
 		"node-unix-socket": "^0.2.7",
-		"semver": "^7.5.2",
+		"semver": "^7.6.3",
 		"vscode-languageclient": "^8.1.0"
 	},
 	"devDependencies": {
