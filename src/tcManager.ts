@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as child_process from "child_process";
 import * as vscode from 'vscode'
 import * as tp from './testexecTaskProvider';
-import { UnixDgramSocket } from "unix-dgram-socket";
+import { DgramSocket } from "node-unix-socket";
 import { toJSONObject } from "vscode-languageclient/lib/common/configuration";
 import { openStdin } from 'process';
 import { fsExists } from './util/fsUtils';
@@ -44,10 +44,10 @@ type TcVerdict = {
 }
 class K3sControlItf {
 	constructor(sockName: string, maxNoTests: number, runInst: vscode.TestRun) {
-		this.sock = new UnixDgramSocket();
+		this.sock = new DgramSocket();
 		let retries = 10;
 		this.rInst = runInst;
-		this.sock.connect(sockName);
+		//this.sock.connect(sockName); needed by UnixDgramSOcket
 		this.sock.bind(sockName);
 		this.sockPath = sockName;
 		this.maxNoTests = maxNoTests;
@@ -55,10 +55,13 @@ class K3sControlItf {
 
 	private sendWretry(message: string, retryCnt: number) {
 		const retry = () => {
-			if (!this.sock.send(message) && retryCnt > 0) {
+			if (!fs.existsSync(this.sockPath) && retryCnt > 0) {
 				retryCnt--;
 				this.rInst.appendOutput(`Retry send in 0.5 seconds (${retryCnt} left)...\r\n`);
 				setTimeout(retry, 500);
+			}
+			else {
+				this.sock.sendTo(Buffer.from(message), 0, message.length, this.sockPath)
 			}
 		}
 		retry();
@@ -74,7 +77,7 @@ class K3sControlItf {
 			this.sock.once('message', (message: Buffer, info: any) => {
 				this.maxNoTests--;
 				this.rInst.appendOutput(`Data received on socket. Still running tests:  ${this.maxNoTests}\r\n`);
-				this.rInst.appendOutput(`received from k3s: ${message.toString(UnixDgramSocket.payloadEncoding)}\r\n`);
+				this.rInst.appendOutput(`received from k3s: ${message.toString()}\r\n`);
 				const retVal: K3sCtrlReply = JSON.parse(message.toString())
 				resolve({ remainingReplies: this.maxNoTests, reply: retVal });
 			});
@@ -95,7 +98,7 @@ class K3sControlItf {
 	}
 	sockPath: string;
 	maxNoTests: number;
-	sock: UnixDgramSocket;
+	sock: DgramSocket;
 	rInst: vscode.TestRun;
 }
 export class TestSuiteData implements Labler {
@@ -263,6 +266,7 @@ class TestSession implements Labler {
 			let allTcsExecuted: number = this.testList.length;
 
 			for (var tc of this.testList) {
+				runInst.appendOutput(`sending to k3s ${tc.label}.\r\n`);
 				k3sConnect.runTest(tc.label)
 			}
 			while (allTcsExecuted > 0) {
@@ -331,7 +335,7 @@ function expandExcludeTestList(request: vscode.TestRunRequest) {
 	const excludeTests: vscode.TestItem[] = [];
 	var mixedExcludeList: vscode.TestItem[] = [];
 	mixedExcludeList.concat(request.exclude ? request.exclude : []);
-	for (let i = 0; i < mixedExcludeList!.length; i++) {
+	for (let i = 0; i < mixedExcludeList.length; i++) {
 		if (mixedExcludeList![i].canResolveChildren) {
 			mixedExcludeList![i].children.forEach(item => { mixedExcludeList!.push(item); });
 		}
@@ -342,12 +346,12 @@ function expandExcludeTestList(request: vscode.TestRunRequest) {
 	return excludeTests;
 }
 
-export function startTestRun(request: vscode.TestRunRequest, testCtrl: vscode.TestController, outputChannel: vscode.OutputChannel) {
+export function startTestRun(request: vscode.TestRunRequest, testCtrl: vscode.TestController, cancellation: vscode.CancellationToken, outputChannel: vscode.OutputChannel) {
 	const queue: { test: vscode.TestItem; data: TestCase }[] = [];
 	const run = testCtrl.createTestRun(request);
 	const testSessions: Map<string, TestSession> = new Map<string, TestSession>();
 	const excludeTests = expandExcludeTestList(request);
-	outputChannel.appendLine(`param provided to startTestRun: ${request.profile!.label}`);
+	outputChannel.appendLine(`param provided to startTestRun: ${request.profile!.label}, exclude List: ${JSON.stringify(excludeTests)}`);
 	const discoverTests = async (tests: Iterable<vscode.TestItem>) => {
 		// tests includes all the tests or parent tree nodes which are marked(UI) for a session
 		// hidden tests (UI) are provided via request.exclude list
@@ -355,14 +359,15 @@ export function startTestRun(request: vscode.TestRunRequest, testCtrl: vscode.Te
 		for (const test of tests) {
 			testsOnly.push(test);
 		}
+		// NOTE: testsOnly is evaluated before each iteration!
 		for (const test of testsOnly) {
-			outputChannel.appendLine(`param provided to discoverTests inside runHandler: ${test.label}, ${test.id}, excluding: ${request.exclude}`);
+			//outputChannel.appendLine(`param provided to discoverTests inside runHandler: ${test.label}, ${test.id}, excluding: ${request.exclude}`);
 			if (excludeTests.includes(test)) {
 				outputChannel.appendLine(`discoverTests: exclude from run: ${test.label}`);
 				continue;
 			}
 
-			if (test.canResolveChildren === false) {
+			if ((test.canResolveChildren === false) && (!cancellation.isCancellationRequested)) {
 				// only real tests shall be marked as enqueued
 				run.enqueued(test); // only an indication for the UI
 				const binDir = getBinaryDir(outputChannel, test);
@@ -372,6 +377,7 @@ export function startTestRun(request: vscode.TestRunRequest, testCtrl: vscode.Te
 					testSessions.set(suiteTarget, new TestSession(request.profile!.label, binDir, suiteTarget));
 				}
 				testSessions.get(suiteTarget)!.addTest(test);
+				outputChannel.appendLine(`add test ${test.label} to testSession: ${suiteTarget}`);
 				continue;
 			}
 			test.children.forEach(item => { testsOnly.push(item) });
@@ -381,13 +387,15 @@ export function startTestRun(request: vscode.TestRunRequest, testCtrl: vscode.Te
 	let testSessionFinished: Promise<void>[] = [];
 	const runTestQueue = async () => {
 		for (const testSession of testSessions) {
+			outputChannel.appendLine(`run testSession: ${testSession[0]}, labeled ${testSession[1].getLabel()}`);
 			testSessionFinished.push(testSession[1].run(run));
 		};
 		await Promise.all(testSessionFinished);
 		run.appendOutput(`Completed session(s) ${request.profile!.label}`);
 		run.end();
 	};
-
+	outputChannel.appendLine(`invoking discoverTests with: ${JSON.stringify(request.include)}, and testCtrl.items: ${JSON.stringify(gatherTestItems(testCtrl.items))}`);
+	// request.include: selected tests, testCtrl.items: fallback: all tests
 	discoverTests(request.include ?? gatherTestItems(testCtrl.items)).then(runTestQueue);
 };
 
