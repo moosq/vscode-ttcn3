@@ -1,9 +1,9 @@
 import * as ttcn3_suites from "./ttcn3_suites";
 import * as child_process from "child_process";
 import * as fs from "fs";
-import path = require('path');
+import * as path from 'path';
 import { OutputChannel, WorkspaceConfiguration } from 'vscode';
-import { getVSCodeDownloadUrl } from "vscode-test/out/util";
+import { getVSCodeDownloadUrl } from "@vscode/test-electron/out/util";
 import { fsExists } from "./util/fsUtils";
 
 export interface Ttcn3Test {
