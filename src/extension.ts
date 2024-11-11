@@ -1,31 +1,23 @@
-import fs = require('fs');
-import path = require('path');
-import * as child_process from "child_process";
+import * as child_process from 'child_process';
 import * as vscode from 'vscode';
 import { ExtensionContext, OutputChannel, TestRunRequest, TestRunProfileKind } from 'vscode';
-import { LanguageClient, LanguageClientOptions, ServerOptions, ExecuteCommandParams, ExecuteCommandRequest, DidChangeConfigurationParams, DidChangeConfigurationNotification, VersionedTextDocumentIdentifier, TextEdit } from 'vscode-languageclient/node';
 import * as ntt from './ntt';
 import * as tcm from './tcManager'
 import * as ttcn3_suites from "./ttcn3_suites"
-import { LOG } from './util/logger';
-import { ServerDownloader } from './serverDownloader';
-import { Status, StatusBarEntry } from './util/status';
-import { isOSUnixoid, correctBinname } from './util/osUtils';
-import { O_SYMLINK } from 'constants';
-import { fsExists } from './util/fsUtils';
-import { Suite } from 'mocha';
-import { profile } from 'console';
 import { TestExecTaskProvider } from './testexecTaskProvider';
-import { resolve } from 'dns';
-import { isUndefined } from 'util';
+
+import * as lsp from 'vscode-languageclient/node';
+import * as path from 'path';
+import * as semver from 'semver';
+import axios, { AxiosRequestConfig, AxiosResponse } from 'axios';
+import * as fs from 'fs';
+import decompress from 'decompress';
+import { ProxyAgent } from 'proxy-agent';
 
 const lineNoToRange = (lineNo: number) => {
 	const position = new vscode.Position(lineNo, 0)
 	return new vscode.Range(position, position)
 }
-
-let client: LanguageClient;
-let outputChannel: OutputChannel;
 
 class TcSuiteCreator {
 
@@ -48,31 +40,42 @@ class Ttcn3TestRunReq extends TestRunRequest {
 	};
 }
 
-export async function activate(context: ExtensionContext) {
+let client: lsp.LanguageClient;
+let outputChannel: vscode.OutputChannel;
+let status: vscode.StatusBarItem;
+let nttPath;
+let nttExecutable;
 
-	outputChannel = vscode.window.createOutputChannel("TTCN-3", "ttcn3-out");
-	//testExecOutChannel = vscode.window.createOutputChannel("TTCN-3-Test");
-	context.subscriptions.push(outputChannel);
-
+export async function activate(context: vscode.ExtensionContext) {
+	vscode.workspace.onDidChangeConfiguration((event) => {
+		if (event.affectsConfiguration('ttcn3')) {
+			sanitizeConfiguration();
+		}
+	});
+	sanitizeConfiguration();
 	const conf = vscode.workspace.getConfiguration('ttcn3');
 
-	// Our work is done, if the user does not want to run a language server.
-	if (!conf.get('useLanguageServer') && !conf.get('server.enabled')) {
-		outputChannel.appendLine('Language server is disabled. If you like to use features like go to definition, enable the language server by opening vscode settings and set ttcn3.useLanguageServer to true. For more information about the TTCN-3 language server, have a look at https://nokia.github.io/ntt/editors/');
+	outputChannel = vscode.window.createOutputChannel('TTCN-3', { log: true });
+	context.subscriptions.push(outputChannel);
+	outputChannel.appendLine(`Activating TTCN-3 extension version ${context.extension.packageJSON['version']}`);
 
-		context.subscriptions.push(vscode.commands.registerCommand("ttcn3.languageServer.restart", async () => {
-			outputChannel.appendLine("Restart command is not available, please enable TTCN-3 Language Server in vscode settings.");
-		}));
+	status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right);
+	context.subscriptions.push(status);
+	status.show()
 
-		context.subscriptions.push(vscode.commands.registerCommand("ttcn3.languageServer.status", async () => {
-			outputChannel.appendLine("Status command is not available, please enable TTCN-3 Language Server in vscode settings.");
-		}));
+	nttPath = path.join(context.extensionPath, 'servers');
+	nttExecutable = path.join(nttPath, correctBinname("ntt"));
 
-		context.subscriptions.push(vscode.commands.registerCommand("ttcn3.languageServer.debug.toggle", async () => {
-			outputChannel.appendLine("Toggle debug command is not available, please enable TTCN-3 Language Server in vscode settings.");
-		}));
-		return;
-	}
+	let cmd = {
+		command: nttExecutable,
+		args: ['langserver'],
+		options: { env: process.env }
+	};
+
+	cmd.options.env.PATH = [
+		config<string[]>('ttcn3.server.toolsPath')?.join(path.delimiter),
+		cmd.options.env.PATH,
+	].join(path.delimiter);
 
 	// register test capability
 	const testCtrl = vscode.tests.createTestController('ttcn3Executor', 'ttcn-3 Testcase Executor');
@@ -94,10 +97,6 @@ export async function activate(context: ExtensionContext) {
 	testCtrl.createRunProfile('Run Tests', vscode.TestRunProfileKind.Run, runHandler, true); // new vscode.TestTag("@feature:5GC000300-C-c1")
 	context.subscriptions.push(testCtrl);
 	const initTasks: Promise<void>[] = [];
-
-	initTasks.push(withSpinningStatus(context, async status => {
-		await activateLanguageServer(context, status, conf);
-	}));
 
 	const from_ttcn3_suites = ttcn3_suites.findTtcn3Suite(vscode.workspace.workspaceFolders);
 	let globFileToTcSuite = new Map<string, ttcn3_suites.OneTtcn3Suite>();
@@ -189,6 +188,79 @@ export async function activate(context: ExtensionContext) {
 	const isTtcn3File = ((vscode.window.activeTextEditor !== undefined) && (vscode.window.activeTextEditor.document.fileName.endsWith('.ttcn3')));
 	const name = ((vscode.window.activeTextEditor !== undefined) && isTtcn3File) ? vscode.window.activeTextEditor.document.fileName : "no ttcn-3 file";
 	generateTcListForCurrFile(testCtrl, conf, globFileToTcSuite, name, isTtcn3File);
+
+	let custom = config<string | undefined>('ttcn3.server.command')?.trim()
+	if (custom) {
+		let args = custom.split(/\s+/).map(s => s.trim());
+		cmd.command = args[0];
+		cmd.args = args.slice(1);
+	} else if (config('ttcn3.server.automaticUpdate')) {
+		const installedVersion = await getInstalledVersion(cmd.command, { env: cmd.options.env });
+		try {
+			outputChannel.appendLine(`Checking for updates...`);
+			const { version: latestVersion, asset: serverAsset, url: releaseNotes } = await getLatestVersion();
+			outputChannel.appendLine(`Latest version: ${latestVersion}`);
+			outputChannel.appendLine(`Installed version: ${installedVersion}`);
+			const msg = `There is an available update for TTCN-3 language server.`;
+			const details = `Do you want to update the TTCN-3 language server to version ${latestVersion}?\n\nA language Server enhances the TTCN-3 experience with code navigation, coloring, code completion and more.\n\nYou can revert to the initial version anytime by reinstalling the extension.`;
+			if (semver.gt(latestVersion, installedVersion)) {
+				outputChannel.appendLine(`Release notes: ${releaseNotes}`);
+				if (await showUpdateDialog(msg, details)) {
+					await updateServer(nttPath, serverAsset, latestVersion);
+				}
+			}
+		} catch (error) {
+			status.text = `$(error) Could not update TTCN-3 Language Server`;
+			outputChannel.appendLine(`Could not update TTCN-3 Language Server: ${error}`);
+			vscode.window.showWarningMessage(`Could not update/download TTCN-3 Language Server. See output channel for details.`);
+			outputChannel.show();
+		}
+	}
+
+	client = new lsp.LanguageClient('ttcn3', 'TTCN-3 Language Client', cmd, {
+		documentSelector: ['ttcn3'],
+		outputChannel: outputChannel,
+	});
+
+	try {
+		outputChannel.appendLine(`Starting ${cmd.command} ${cmd.args.join(' ')}`);
+		await client.start();
+		const info = client.initializeResult?.serverInfo;
+		if (info) {
+			status.text = `${info.name} ${info.version}`;
+		}
+	} catch (e: any) {
+		vscode.window.showInformationMessage(`Could not start the TTCN-3 Language Server: ${e}`);
+		return;
+	}
+
+	context.subscriptions.push(vscode.commands.registerCommand("ttcn3.languageServer.restart", async () => {
+		await client.restart();
+	}));
+
+	context.subscriptions.push(vscode.commands.registerCommand("ttcn3.languageServer.status", async () => {
+		const params: lsp.ExecuteCommandParams = { command: "ntt.status", arguments: [] };
+		await client.sendRequest(lsp.ExecuteCommandRequest.type, params);
+	}));
+
+	context.subscriptions.push(vscode.commands.registerCommand("ttcn3.languageServer.debug.toggle", async () => {
+		const params: lsp.ExecuteCommandParams = { command: "ntt.debug.toggle", arguments: [] };
+		await client.sendRequest(lsp.ExecuteCommandRequest.type, params);
+	}));
+
+	context.subscriptions.push(vscode.commands.registerCommand("ntt.test", async (args) => {
+		const params: lsp.ExecuteCommandParams = { command: "ntt.test", arguments: [args] };
+		await client.sendRequest(lsp.ExecuteCommandRequest.type, params);
+	}));
+
+	context.subscriptions.push(
+		vscode.workspace.onDidChangeConfiguration((e: vscode.ConfigurationChangeEvent) => {
+			// react on any configuration change.
+			// Let the server decide what is usefull
+			const params: lsp.DidChangeConfigurationParams = { settings: undefined };
+			client.sendNotification(lsp.DidChangeConfigurationNotification.type, params);
+		}));
+	return;
 }
 
 async function generateTcListForCurrFile(testCtrl: vscode.TestController, conf: vscode.WorkspaceConfiguration, globFileToTcSuite: Map<string, ttcn3_suites.OneTtcn3Suite>, name: string, isTtcn3File: boolean) {
@@ -250,160 +322,108 @@ async function generateTcListForCurrFile(testCtrl: vscode.TestController, conf: 
 	}
 }
 
-async function withSpinningStatus(context: vscode.ExtensionContext, action: (status: Status) => Promise<void>): Promise<void> {
-	const status = new StatusBarEntry(context, "$(sync~spin)");
-	status.show();
-	await action(status);
-	status.dispose();
+function sanitizeConfiguration() {
+	const update = config<boolean>('ttcn3.server.automaticUpdate');
+	const cmd = config<string>('ttcn3.server.command');
+
+	if (update && cmd) {
+		vscode.workspace.getConfiguration().update('ttcn3.server.automaticUpdate', false, vscode.ConfigurationTarget.Global);
+		vscode.window.showWarningMessage("Automatic updates have been disabled, because custom commands cannot be updated.");
+	}
 }
 
-export async function activateLanguageServer(context: vscode.ExtensionContext, status: Status, conf: vscode.WorkspaceConfiguration) {
-
-	outputChannel.appendLine('Activating TTCN-3 Language Server...');
-	status.update('Activating Activating TTCN-3 Language Server...');
-
-	const installDir = path.join(context.extensionPath, "servers");
-	const nttDownloader = new ServerDownloader("TTCN-3 Language Server", "ntt", assetName(), installDir, outputChannel);
-
-	if (conf.get('server.update')) {
-		try {
-			await nttDownloader.downloadServerIfNeeded(status);
-			// Ensure that start script can be executed
-			if (isOSUnixoid()) {
-				child_process.exec(`chmod +x ${installDir}/ntt`);
-			}
-		} catch (error) {
-			console.error(error);
-			vscode.window.showWarningMessage(`Could not update/download TTCN-3 Language Server: ${error}`);
-		}
+async function updateServer(installDir: string, serverAsset: Asset, latestVersion: string) {
+	if (!(await fsExists(installDir))) {
+		await fs.promises.mkdir(installDir, { recursive: true });
 	}
 
-	const ntt = await findNttExecutable(installDir);
-	let toolsPath: string = "";
-	let separator: string;
-	if (getOs() === 'windows') {
-		separator = ';';
-	} else {
-		separator = ':';
-	}
-	let pathList: string[] | undefined = conf.get('server.toolsPath');
-	var libraryList: string[] = new Array();
-	let libraryPath: string = "";
-	if (pathList) {
-		if (getOs() != 'windows') {
-			pathList.forEach(element => {
-				libraryList.push(element + '/../lib64');
-				libraryList.push(element + '/../lib');
-			});
-			libraryPath = libraryList.join(separator);
-			libraryPath = libraryPath + separator + process.env['LD_LIBRARY_PATH']!;
+	const url = serverAsset.browser_download_url;
+	outputChannel.appendLine(`Downloading ${url}...`);
+	const response = await fetch(url, {
+		responseType: 'stream',
+		onDownloadProgress: (progressEvent: any) => {
+			const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+			status.text = `$(sync~spin) Downloading ${assetName()} ${latestVersion} :: ${percent.toFixed(2)} %`;
 		}
-		toolsPath = pathList.join(separator);
-		if (toolsPath.length > 0) {
-			toolsPath = toolsPath + separator + process.env['PATH']!;
-		} else {
-			toolsPath = process.env['PATH']!;
-		}
-	}
-	outputChannel.appendLine('toolsPath: ' + toolsPath);
-	let serverOptions: ServerOptions = {
-		run: { command: ntt, args: ['langserver'], options: { env: process.env } },
-		debug: { command: ntt, args: ['langserver'], options: { env: process.env } }
-	};
-	if (serverOptions.debug.options) {
-		serverOptions.debug.options.env['PATH'] = toolsPath;
-		if (libraryPath.length > 0) {
-			serverOptions.debug.options.env['LD_LIBRARY_PATH'] = libraryPath;
-		}
-	}
-	if (serverOptions.run.options) {
-		serverOptions.run.options.env['PATH'] = toolsPath;
-		if (libraryPath.length > 0) {
-			serverOptions.run.options.env['LD_LIBRARY_PATH'] = libraryPath;
-		}
-	}
+	});
 
-	let clientOptions: LanguageClientOptions = {
-		documentSelector: ['ttcn3'],
-		outputChannel: outputChannel
-	};
+	const downloadDest = path.join(installDir, `download-${assetName()}`);
+	const writer = fs.createWriteStream(downloadDest);
+	response.data.pipe(writer);
+	await new Promise((resolve, reject) => {
+		writer.on('finish', resolve);
+		writer.on('error', reject);
+	});
 
-	// Create the language client and start the client.
-	status.update(`Initializing TTCN-3 Language Server...`);
-	client = new LanguageClient('ttcn3', 'TTCN-3 Language Server', serverOptions, clientOptions);
+	status.text = `$(sync~spin) Unpacking...`;
+	await decompress(downloadDest, installDir, {
+		filter: (file: any) => path.basename(file.path) == correctBinname("ntt")
+	});
+	await fs.promises.unlink(downloadDest);
+	if (isOSUnixoid()) {
+		child_process.exec(`chmod +x ${installDir}/ntt`);
+	}
+	status.text = `$(check) Installed ${latestVersion}`;
+}
+
+
+function getInstalledVersion(nttExecutable: string, options?: child_process.ExecSyncOptions): string {
 	try {
-		await client.start();
-	} catch (e) {
-		if (e instanceof Error) {
-			vscode.window.showInformationMessage('Could not start the TTCN-3 Language Server:', e.message);
-		} else if (typeof e === 'string') {
-			vscode.window.showInformationMessage('Could not start the TTCN-3 Language Server:', e);
-		} else {
-			vscode.window.showInformationMessage('Could not start the TTCN-3 Language Server: unknown error');
+		let stdout = child_process.execSync(`${nttExecutable} version`, options).toString().trim();
+		let sv = semver.coerce(stdout);
+		if (!sv) {
+			return '0.0.0';
 		}
-		return;
+		return sv.version;
+	} catch (error: any) {
+		return '0.0.0';
 	}
-
-	context.subscriptions.push(vscode.commands.registerCommand("ttcn3.languageServer.restart", async () => {
-		await client.stop();
-
-		outputChannel.appendLine("");
-		outputChannel.appendLine(" === Language Server Restart ===");
-		outputChannel.appendLine("");
-
-		await client.start();
-	}));
-
-	context.subscriptions.push(vscode.commands.registerCommand("ttcn3.languageServer.status", async () => {
-		const params: ExecuteCommandParams = { command: "ntt.status", arguments: [] };
-		await client.sendRequest(ExecuteCommandRequest.type, params);
-	}));
-
-	context.subscriptions.push(vscode.commands.registerCommand("ttcn3.languageServer.debug.toggle", async () => {
-		const params: ExecuteCommandParams = { command: "ntt.debug.toggle", arguments: [] };
-		await client.sendRequest(ExecuteCommandRequest.type, params);
-	}));
-
-	context.subscriptions.push(vscode.commands.registerCommand("ntt.test", async (args) => {
-		const params: ExecuteCommandParams = { command: "ntt.test", arguments: [args] };
-		await client.sendRequest(ExecuteCommandRequest.type, params);
-	}));
-	context.subscriptions.push(
-		vscode.workspace.onDidChangeConfiguration((e: vscode.ConfigurationChangeEvent) => {
-			// react on any configuration change.
-			// Let the server decide what is usefull
-			const params: DidChangeConfigurationParams = { settings: undefined };
-			client.sendNotification(DidChangeConfigurationNotification.type, params);
-		}));
 }
 
-async function findNttExecutable(installDir: string): Promise<string> {
-	let ntt = correctBinname("ntt");
-	let nttPath = path.join(installDir, ntt);
-
-	// Try installed binary
-	if (fs.existsSync(nttPath)) {
-		return nttPath;
+async function getLatestVersion(): Promise<{ version: string, asset: Asset, url: string }> {
+	let url = config<string | undefined>('ttcn3.server.updateServerURL')?.trim();
+	if (!url) {
+		url = 'https://ttcn3.dev/api/v1/ntt';
 	}
 
-	// Then search PATH parts
-	if (process.env['PATH']) {
-		outputChannel.append("Looking for ntt in PATH...");
-
-		let pathparts = process.env['PATH'].split(path.delimiter);
-		for (let i = 0; i < pathparts.length; i++) {
-			let binpath = path.join(pathparts[i], ntt);
-			if (fs.existsSync(binpath)) {
-				outputChannel.appendLine(binpath);
-				return binpath;
+	const response = await fetch(`${url}/releases`);
+	const data = await response.data;
+	if (!response.headers['content-type']?.includes('application/json')) {
+		throw new Error(`Unexpected response from ${url}:\n${response.headers}\n\n${data}`);
+	}
+	const releases = data as Release[];
+	const releaseInfo: Release = releases
+		.filter(release => {
+			return !release.prerelease || config<boolean>('ttcn3.server.usePrereleases')
+		})
+		.sort((latest, release) => {
+			const a = semver.coerce(latest.tag_name) || '0.0.0';
+			const b = semver.coerce(release.tag_name) || '0.0.0';
+			if (semver.lt(a, b)) {
+				return 1;
+			} if (semver.gt(a, b)) {
+				return -1;
+			} else {
+				return 0;
 			}
-		}
-		outputChannel.appendLine("");
-	}
+		})[0];
 
-	let p = process.env['PATH'];
-	outputChannel.appendLine(`Could not find ntt in ${p}, will try using binary name directly`);
-	return ntt;
+	const serverAsset = releaseInfo.assets.find(asset => asset.name === assetName());
+	if (!serverAsset) {
+		throw new Error(`Missing asset URL from ${url}: ${assetName()}`);
+	}
+	return { version: releaseInfo.tag_name, asset: serverAsset, url: releaseInfo.html_url };
+}
+
+async function showUpdateDialog(msg: string, details: string): Promise<boolean> {
+	const cancelButton: vscode.MessageItem = { title: 'Cancel', isCloseAffordance: true }
+	const updateButton: vscode.MessageItem = { title: 'Update', isCloseAffordance: false }
+	const selected = await vscode.window.showInformationMessage(msg, { modal: true, detail: details }, cancelButton, updateButton);
+	return selected === updateButton;
+}
+
+function config<T>(key: string): T | undefined {
+	return vscode.workspace.getConfiguration().get(key);
 }
 
 function assetName(): string {
@@ -436,9 +456,112 @@ function getArch(): string {
 	}
 	return arch;
 }
+
 export function deactivate(): Thenable<void> | undefined {
 	if (!client) {
 		return undefined;
 	}
 	return client.stop();
+}
+
+function fetch<T = any, R = AxiosResponse<T>, D = any>(url: string, conf?: AxiosRequestConfig<D>): Promise<R> {
+	// Axios has an issue with HTTPS requests over HTTP proxies. A custom
+	// agent circumvents this issue.
+	const agent = new ProxyAgent()
+	if (!conf) {
+		conf = {}
+	}
+	conf.proxy = false;
+	conf.httpAgent = agent;
+	conf.httpsAgent = agent;
+	if (config('ttcn3.server.ignoreCertificateErrors')) {
+		conf.httpsAgent.rejectUnauthorized = false;
+	}
+
+	// Some common headers
+	if (!conf.headers) {
+		conf.headers = {}
+	}
+	conf.headers["User-Agent"] = "vscode-ttcn3-ide";
+	conf.headers["Cache-Control"] = "no-cache";
+	conf.headers["Pragma"] = "no-cache";
+	return axios.get(url, conf);
+}
+
+export interface Release {
+	url: string;
+	assets_url: string;
+	upload_url: string;
+	html_url: string;
+	id: number;
+	node_id: string;
+	tag_name: string;
+	target_commitish: string;
+	name: string;
+	draft: boolean;
+	author: Author;
+	prerelease: boolean;
+	created_at: string;
+	published_at: string;
+	assets: Asset[];
+	tarball_url: string;
+	zipball_url: string;
+	body: any | null;
+}
+
+export interface Author {
+	login: string;
+	id: number;
+	node_id: string;
+	gravatar_id: string;
+	url: string;
+	html_url: string;
+	followers_url: string;
+	following_url: string;
+	gists_url: string;
+	starred_url: string;
+	subscriptions_url: string;
+	organizations_url: string;
+	repos_url: string;
+	events_url: string;
+	received_events_url: string;
+	type: string;
+	site_admin: boolean;
+}
+
+export interface Asset {
+	url: string;
+	id: number;
+	node_id: string;
+	name: string;
+	label: string;
+	uploader: Author;
+	content_type: string;
+	state: string;
+	size: number;
+	download_count: number;
+	created_at: string;
+	updated_at: string;
+	browser_download_url: string;
+}
+
+export async function fsExists(path: fs.PathLike): Promise<boolean> {
+	try {
+		await fs.promises.access(path);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export function isOSUnixoid(): boolean {
+	let platform = process.platform;
+	return platform === "linux"
+		|| platform === "darwin"
+		|| platform === "freebsd"
+		|| platform === "openbsd";
+}
+
+export function correctBinname(binname: string): string {
+	return binname + ((process.platform === 'win32') ? '.exe' : '');
 }
