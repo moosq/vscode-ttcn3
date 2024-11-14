@@ -3,11 +3,10 @@ import * as path from 'path';
 import * as child_process from "child_process";
 import * as vscode from 'vscode'
 import * as tp from './testexecTaskProvider';
-import { DgramSocket } from "node-unix-socket";
 import { toJSONObject } from "vscode-languageclient/lib/common/configuration";
-import { openStdin } from 'process';
-import { fsExists } from './util/fsUtils';
 import { setTimeout } from 'timers';
+import { tmpdir } from 'os';
+import * as dgram from 'unix-dgram'
 
 let generationCounter = 0;
 type Ttcn3TestData = TestFile | TestCase | TestSuiteData | ModuleData;
@@ -43,14 +42,38 @@ type TcVerdict = {
 	reply: K3sCtrlReply
 }
 class K3sControlItf {
+	private sock: dgram.Socket
 	constructor(sockName: string, maxNoTests: number, runInst: vscode.TestRun) {
-		this.sock = new DgramSocket();
 		let retries = 10;
 		this.rInst = runInst;
-		//this.sock.connect(sockName); needed by UnixDgramSOcket
-		this.sock.bind(sockName);
 		this.sockPath = sockName;
+
+		// Generate a unique socket name in the temporary directory
+		const uniqueSockName = path.join(tmpdir(), `from-testExec2vscode-${Date.now()}.sock`);
+
 		this.maxNoTests = maxNoTests;
+		try {
+			this.sock = dgram.createSocket('unix_dgram');
+		} catch (err) {
+			this.rInst.appendOutput(`Failed to create socket: ${(err as Error).message}\r\n`);
+			throw err; // Re-throw the error to handle it in the calling code
+		}
+
+		this.sock.on('error', (err: Error) => {
+			this.rInst.appendOutput(`Socket error: ${err.message}\r\n`);
+			// Handle the error, possibly retry binding or exit
+		});
+		this.rInst.appendOutput(`binding socket to ${this.sockPath}\r\n`);
+		try {
+			this.sock.bind(uniqueSockName);
+		}
+		catch (err) {
+			this.rInst.appendOutput(`Failed to bind socket: ${(err as Error).message}\r\n`);
+			throw err; // Re-throw the error to handle it in the calling code
+		}
+		finally {
+			this.rInst.appendOutput(`Socket successfully bound to ${uniqueSockName}\r\n`);
+		}
 	}
 
 	private sendWretry(message: string, retryCnt: number) {
@@ -61,14 +84,10 @@ class K3sControlItf {
 				setTimeout(retry, 500);
 			}
 			else {
-				this.sock.sendTo(Buffer.from(message), 0, message.length, this.sockPath)
+				this.sock.send(Buffer.from(message), 0, message.length, this.sockPath)
 			}
 		}
-		retry();
-	}
-
-	instanciateReceiver(f: (message: Buffer, info: any) => void) {
-		this.sock.on('message', f);
+		retry()
 	}
 
 	decrementCounter(): Promise<TcVerdict> {
@@ -98,7 +117,6 @@ class K3sControlItf {
 	}
 	sockPath: string;
 	maxNoTests: number;
-	sock: DgramSocket;
 	rInst: vscode.TestRun;
 }
 export class TestSuiteData implements Labler {
@@ -247,18 +265,28 @@ class TestSession implements Labler {
 				runInst.appendOutput(`${ctrlSock} already existing, deleting it...\r\n`);
 				fs.unlinkSync(ctrlSock);
 			}
-			// watch for *.ctrl.sock to come alive
-			const fileWatcher = vscode.workspace.createFileSystemWatcher(ctrlSock);
-
-			const waitForK3sStartup = new Promise(resolve => fileWatcher.onDidCreate(resolve));
-			runInst.appendOutput("starting test task\r\n");
 
 			// execute the testcase task
 			waitForK3s = vscode.commands.executeCommand("workbench.action.tasks.runTask", `${label}`);
-			// wait for the creation of the communication socket
-			await waitForK3sStartup.then(() => runInst.appendOutput("detected ctrl.sock\r\n"), (reason) => runInst.appendOutput(`rejected ctrl.sock: ${reason} \r\n`))
-				.catch((error) => { runInst.appendOutput(`detected error on ctrl.sock: ${error}\r\n`) });
-			fileWatcher.dispose();
+
+			// watch for *.ctrl.sock to come alive
+			/*		const fileWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(this.buildDir), `${this.target}.ctrl.sock`));
+		
+					const waitForK3sStartup = new Promise(resolve => fileWatcher.onDidCreate(resolve));
+					runInst.appendOutput("starting test task\r\n");
+		
+					// execute the testcase task
+					waitForK3s = vscode.commands.executeCommand("workbench.action.tasks.runTask", `${label}`);
+					// wait for the creation of the communication socket
+					try {
+						await waitForK3sStartup;
+						runInst.appendOutput("detected ctrl.sock\r\n");
+					} catch (reason) {
+						runInst.appendOutput(`rejected ctrl.sock: ${reason} \r\n`);
+						return; // Exit if the socket creation failed
+					} finally {
+						fileWatcher.dispose();
+					}*/
 
 			runInst.appendOutput("try to connect to k3s...\r\n");
 			const k3sConnect = new K3sControlItf(ctrlSock, this.testList.length, runInst);
@@ -301,6 +329,7 @@ class TestSession implements Labler {
 			resolve();
 		})
 	}
+
 	private testList: vscode.TestItem[];
 	private testMap: TcMapType;
 }
