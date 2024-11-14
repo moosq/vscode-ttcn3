@@ -4,7 +4,6 @@ import * as cp from 'child_process';
 import * as ttcn3_suites from './ttcn3_suites';
 import * as vscode from 'vscode';
 import { error } from 'console';
-import { openStdin } from 'process';
 
 export class TestExecTaskProvider implements vscode.TaskProvider {
 	static TestExecType = 'exec_ttcn3';

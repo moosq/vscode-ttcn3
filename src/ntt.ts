@@ -3,8 +3,6 @@ import * as child_process from "child_process";
 import * as fs from "fs";
 import * as path from 'path';
 import { OutputChannel, WorkspaceConfiguration } from 'vscode';
-import { getVSCodeDownloadUrl } from "@vscode/test-electron/out/util";
-import { fsExists } from "./util/fsUtils";
 
 export interface Ttcn3Test {
 	filename: string
