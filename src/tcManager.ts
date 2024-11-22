@@ -128,6 +128,10 @@ export class TestSuiteData implements Labler {
 	getLabel() {
 		return `this is a TestSuiteData called ${this.target}`;
 	}
+
+	toString(): string {
+		return `TestSuiteData { target: ${this.target}, build_dir: ${this.build_dir} }`;
+	}
 }
 
 export class ModuleData implements Labler {
