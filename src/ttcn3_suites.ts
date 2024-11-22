@@ -16,6 +16,9 @@ export interface OneTtcn3Suite {
 	ui_tcmodule: vscode.TestItem
 }
 
+export type File2Suites = Map<string, OneTtcn3Suite>;
+
+
 export interface Ttcn3SuiteType {
 	source_dir: string
 	binary_dir: string
