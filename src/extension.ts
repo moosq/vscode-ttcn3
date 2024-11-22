@@ -262,62 +262,133 @@ export async function activate(context: vscode.ExtensionContext) {
 		}));
 	return;
 }
+async function insertNewSuite(testCtrl: vscode.TestController, conf: vscode.WorkspaceConfiguration, globFileToTcSuite: ttcn3_suites.File2Suites, name: string) {
+	let manifestDir = ntt.discoverManifestFile(path.dirname(name));
+	let s: ntt.Ttcn3TestSuite;
+	if (!manifestDir) {
+		manifestDir = name;
+	}
 
-async function generateTcListForCurrFile(testCtrl: vscode.TestController, conf: vscode.WorkspaceConfiguration, globFileToTcSuite: Map<string, ttcn3_suites.OneTtcn3Suite>, name: string, isTtcn3File: boolean) {
+	await ntt.show(outputChannel, ntt.getNttExeFromToolsPath(conf), manifestDir).then((suite: ntt.Ttcn3TestSuite) => {
+		s = suite;
+	});
+
+	await ntt.getTestcaseList(outputChannel, ntt.getNttExeFromToolsPath(conf), (manifestDir) ? manifestDir : name).then((list: ntt.Ttcn3Test[],) => {
+		if (list.length == 0) { return }
+
+		const file2Tests = new Map<string, ntt.Ttcn3Test[]>();
+		list.forEach((vtc: ntt.Ttcn3Test, idx: number, a: ntt.Ttcn3Test[]) => {
+			if (file2Tests.has(vtc.filename)) {
+				file2Tests.get(vtc.filename)!.push(vtc);
+			} else {
+				file2Tests.set(vtc.filename, [vtc]);
+			}
+		});
+
+		const newSuite = testCtrl.createTestItem(s.name, s.name, undefined);
+		newSuite.canResolveChildren = true;
+
+		outputChannel.appendLine(`insertNewSuite: #tests=${list.length}, spread over #files=${file2Tests.size}`);
+		file2Tests.forEach((v, k) => {
+			outputChannel.appendLine(`generateTcListForCurrFile: file2Tests: [${k}]=${JSON.stringify(v)}`);
+			const mod = testCtrl.createTestItem(k, k, undefined);
+			const moduleData = new tcm.ModuleData(k);
+			if (globFileToTcSuite.has(k)) {
+				//const partOfSuite = globFileToTcSuite.get(k)!;
+				//outputChannel.appendLine(`generateTcListForCurrFile: the parent of key: ${k}= ${partOfSuite.ui_tcmodule.parent} with size ${partOfSuite.ui_tcmodule.parent?.children.size} children. isPartOfSuite.root_dir: ${partOfSuite.root_dir}`);
+				//tcm.testData.delete(partOfSuite.ui_tcmodule); // delete the old UI data and replace it later with the content of moduleData
+				//partOfSuite.ui_tcmodule.parent?.children.add(mod); // exchange the module branch inside the tc suite
+				//partOfSuite.ui_tcmodule = mod;
+				//globFileToTcSuite.set(k, partOfSuite);
+			} else {
+				globFileToTcSuite.set(k, { source_dir: path.dirname(name), root_dir: path.dirname(name), binary_dir: path.dirname(name), target: "", ui_tcmodule: mod }); // this still did not resolve appearance of the second file inside the suite
+			}
+			tcm.testData.set(mod, moduleData); // associate the module(file) with appropriate data
+			newSuite.children.add(mod);
+
+			// add all the tests to the module
+			v.forEach(tcName => {
+				const tcUri = vscode.Uri.file(k);
+				const tc = testCtrl.createTestItem(tcName.id.concat(k), tcName.id, tcUri);
+				tc.range = lineNoToRange(tcName.line - 1);
+				let tcTags: vscode.TestTag[] = [];
+				if (tcName.tags !== undefined) {
+					ntt.buildTagsList(conf, tcName.tags).forEach((tagId: string) => {
+						tcTags.push(new vscode.TestTag(tagId));
+					});
+					tc.tags = tcTags;
+					tcTags.length = 0;
+					ntt.buildTagsList(conf, tcName.tags).forEach((tagId: string) => {
+						tcTags.push(new vscode.TestTag(tagId));
+					});
+				}
+
+				mod.children.add(tc);
+			});
+			mod.canResolveChildren = true;
+		})
+		const sData = new tcm.TestSuiteData("", s.root);
+		tcm.testData.set(newSuite, sData); // associate the suite with appropriate data
+		testCtrl.items.add(newSuite);//add the new suite to the UI
+	})
+
+}
+async function generateTcListForCurrFile(testCtrl: vscode.TestController, conf: vscode.WorkspaceConfiguration, globFileToTcSuite: ttcn3_suites.File2Suites, name: string, isTtcn3File: boolean) {
 	{
 		if (isTtcn3File) {
 			outputChannel.appendLine(`generateTcListForCurrFile: file: ${name}, globFileToTcSuite: length=${globFileToTcSuite.size}, ${JSON.stringify(globFileToTcSuite)}`);
+			if (!globFileToTcSuite.has(name)) {
+				insertNewSuite(testCtrl, conf, globFileToTcSuite, name);
+			}
+			else {
+				//file is already known, just update the test list
+				const partOfSuite = globFileToTcSuite.get(name)!;
+				let suiteName = "";
 
-			await ntt.getTestcaseList(outputChannel, ntt.getNttExeFromToolsPath(conf), name).then((list: ntt.Ttcn3Test[],) => {
-				const file2Tests = new Map<string, ntt.Ttcn3Test[]>();
-				list.forEach((vtc: ntt.Ttcn3Test, idx: number, a: ntt.Ttcn3Test[]) => {
-					if (file2Tests.has(vtc.filename)) {
-						file2Tests.get(vtc.filename)!.push(vtc);
-					} else {
-						file2Tests.set(vtc.filename, [vtc]);
-					}
-				});
-				outputChannel.appendLine(`generateTcListForCurrFile: file2Tests: length=${file2Tests.size}, ${JSON.stringify(file2Tests)}`);
-				file2Tests.forEach((v, k) => {
-					outputChannel.appendLine(`generateTcListForCurrFile: file2Tests: [${k}]=${JSON.stringify(v)}`);
-					let sData: tcm.TestSuiteData;
-					const mod = testCtrl.createTestItem(k, k, undefined);
-					const moduleData = new tcm.ModuleData(k);
-					if (globFileToTcSuite.has(k)) {
-						const isPartOfSuite = globFileToTcSuite.get(k)!;
-						outputChannel.appendLine(`generateTcListForCurrFile: the parent of key: ${k}= ${isPartOfSuite.ui_tcmodule.parent} with size ${isPartOfSuite.ui_tcmodule.parent?.children.size} children. isPartOfSuite: ${JSON.stringify(isPartOfSuite)}`);
-						tcm.testData.delete(isPartOfSuite.ui_tcmodule);
-						isPartOfSuite.ui_tcmodule.parent?.children.add(mod); // exchange the module branch inside the tc suite
-						isPartOfSuite.ui_tcmodule = mod;
-						globFileToTcSuite.set(k, isPartOfSuite);
-						outputChannel.appendLine(`generateTcListForCurrFile: isPartOfSuite: ${JSON.stringify(isPartOfSuite.root_dir)} for key: ${k}`);
-						sData = new tcm.TestSuiteData(isPartOfSuite.target, isPartOfSuite.binary_dir);
-					} else {
-						sData = new tcm.TestSuiteData("", "");
-					}
-					tcm.testData.set(mod, moduleData);
-
-					v.forEach(tcName => {
-						const tcUri = vscode.Uri.file(k);
-						const tc = testCtrl.createTestItem(tcName.id.concat(k), tcName.id, tcUri);
-						tc.range = lineNoToRange(tcName.line - 1);
-						let tcTags: vscode.TestTag[] = [];
-						if (tcName.tags !== undefined) {
-							ntt.buildTagsList(conf, tcName.tags).forEach((tagId: string) => {
-								tcTags.push(new vscode.TestTag(tagId));
-							});
-							tc.tags = tcTags;
-							tcTags.length = 0;
-							ntt.buildTagsList(conf, tcName.tags).forEach((tagId: string) => {
-								tcTags.push(new vscode.TestTag(tagId));
-							});
+				await ntt.getTestcaseList(outputChannel, ntt.getNttExeFromToolsPath(conf), name).then((list: ntt.Ttcn3Test[],) => {
+					const file2Tests = new Map<string, ntt.Ttcn3Test[]>();
+					list.forEach((vtc: ntt.Ttcn3Test, idx: number, a: ntt.Ttcn3Test[]) => {
+						if (file2Tests.has(vtc.filename)) {
+							file2Tests.get(vtc.filename)!.push(vtc);
+						} else {
+							file2Tests.set(vtc.filename, [vtc]);
 						}
-
-						mod.children.add(tc);
 					});
-					mod.canResolveChildren = true;
+
+					outputChannel.appendLine(`generateTcListForCurrFile: update tc list for '${name}': #files=${file2Tests.size}, #tests=${list.length}`);
+					file2Tests.forEach((v, k) => {
+						outputChannel.appendLine(`generateTcListForCurrFile: file2Tests: [${k}]=${JSON.stringify(v)}`);
+						const mod_ui = testCtrl.createTestItem(k, k, undefined);
+						const moduleData = new tcm.ModuleData(k);
+						tcm.testData.delete(partOfSuite.ui_tcmodule); // delete the old UI data and replace it later with the content of moduleData
+						partOfSuite.ui_tcmodule.parent?.children.add(mod_ui); // exchange the module branch inside the tc suite
+						partOfSuite.ui_tcmodule = mod_ui;
+						globFileToTcSuite.set(k, partOfSuite);
+						outputChannel.appendLine(`generateTcListForCurrFile: isPartOfSuite: ${JSON.stringify(partOfSuite.root_dir)} for key: ${k}`);
+						tcm.testData.set(mod_ui, moduleData);
+
+						v.forEach(tcName => {
+							const tcUri = vscode.Uri.file(k);
+							const tc = testCtrl.createTestItem(tcName.id.concat(k), tcName.id, tcUri);
+							tc.range = lineNoToRange(tcName.line - 1);
+							let tcTags: vscode.TestTag[] = [];
+							if (tcName.tags !== undefined) {
+								ntt.buildTagsList(conf, tcName.tags).forEach((tagId: string) => {
+									tcTags.push(new vscode.TestTag(tagId));
+								});
+								tc.tags = tcTags;
+								tcTags.length = 0;
+								ntt.buildTagsList(conf, tcName.tags).forEach((tagId: string) => {
+									tcTags.push(new vscode.TestTag(tagId));
+								});
+							}
+
+							mod_ui.children.add(tc);
+						});
+						mod_ui.canResolveChildren = true;
+					});
 				});
-			});
+			}
 		}
 	}
 }
